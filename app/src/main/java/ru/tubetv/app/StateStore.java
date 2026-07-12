@@ -7,14 +7,24 @@ final class StateStore {
     private static final String PREFS = "playback_state";
 
     static void saveSearch(Context context, String query, int filter) {
+        saveSearch(context, query, filter, false);
+    }
+
+    static void saveSearch(Context context, String query, int filter, boolean trafficMode) {
         prefs(context).edit()
                 .putString("screen", "search")
                 .putString("query", query)
                 .putInt("filter", filter)
+                .putBoolean("traffic_mode", trafficMode)
                 .apply();
     }
 
     static void savePlayer(Context context, VideoItem item, long position) {
+        savePlayer(context, item, position, false, 0, false);
+    }
+
+    static void savePlayer(Context context, VideoItem item, long position,
+                           boolean trafficMode, int targetHeight, boolean audioOnly) {
         prefs(context).edit()
                 .putString("screen", "player")
                 .putString("source", item.source)
@@ -25,6 +35,9 @@ final class StateStore {
                 .putString("page_url", item.pageUrl)
                 .putLong("duration", item.durationMs)
                 .putLong("position", Math.max(0, position))
+                .putBoolean("player_traffic_mode", trafficMode)
+                .putInt("player_target_height", targetHeight)
+                .putBoolean("player_audio_only", audioOnly)
                 .apply();
     }
 
@@ -39,6 +52,10 @@ final class StateStore {
     static String screen(Context context) { return prefs(context).getString("screen", "search"); }
     static String query(Context context) { return prefs(context).getString("query", ""); }
     static int filter(Context context) { return prefs(context).getInt("filter", 0); }
+    static boolean trafficMode(Context context) { return prefs(context).getBoolean("traffic_mode", false); }
+    static boolean playerTrafficMode(Context context) { return prefs(context).getBoolean("player_traffic_mode", false); }
+    static int playerTargetHeight(Context context) { return prefs(context).getInt("player_target_height", 0); }
+    static boolean playerAudioOnly(Context context) { return prefs(context).getBoolean("player_audio_only", false); }
     static long position(Context context) { return prefs(context).getLong("position", 0L); }
 
     static VideoItem playerItem(Context context) {

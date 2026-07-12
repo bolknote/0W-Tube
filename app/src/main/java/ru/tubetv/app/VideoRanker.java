@@ -9,15 +9,29 @@ final class VideoRanker {
     private static final String[] UNWANTED = {"трейлер", "обзор", "фрагмент", "отрывок", "тизер"};
 
     static Comparator<VideoItem> comparator(String query) {
+        return comparator(query, false);
+    }
+
+    static Comparator<VideoItem> comparator(String query, boolean lowestQualityFirst) {
         return (left, right) -> {
             int relevance = Integer.compare(score(right.title, query), score(left.title, query));
             if (relevance != 0) return relevance;
-            int quality = Integer.compare(right.maxWidth, left.maxWidth);
+            int quality = lowestQualityFirst
+                    ? compareKnownQuality(left.maxWidth, right.maxWidth)
+                    : Integer.compare(right.maxWidth, left.maxWidth);
             if (quality != 0) return quality;
-            quality = Integer.compare(right.maxHeight, left.maxHeight);
+            quality = lowestQualityFirst
+                    ? compareKnownQuality(left.maxHeight, right.maxHeight)
+                    : Integer.compare(right.maxHeight, left.maxHeight);
             if (quality != 0) return quality;
             return 0; // List.sort is stable: preserve the source's own ranking.
         };
+    }
+
+    private static int compareKnownQuality(int left, int right) {
+        if (left == 0) return right == 0 ? 0 : 1;
+        if (right == 0) return -1;
+        return Integer.compare(left, right);
     }
 
     static int score(String title, String query) {

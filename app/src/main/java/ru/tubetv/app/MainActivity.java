@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Build;
 import android.graphics.Color;
@@ -21,6 +22,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.GridView;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -49,15 +51,20 @@ public final class MainActivity extends Activity {
     private final List<VideoItem> allItems = new ArrayList<>();
     private final List<VideoItem> items = new ArrayList<>();
     private final Set<String> qualityRequested = new HashSet<>();
-    private static final String[] FILTER_LABELS = {"Любое", "720+", "1080+", "1440+", "2160 / 4K"};
-    private static final int[] FILTER_WIDTHS = {0, 1280, 1920, 2560, 3840};
+    private static final String[] NORMAL_FILTER_LABELS = {"Любое", "720+", "1080+", "1440+", "2160 / 4K"};
+    private static final int[] NORMAL_FILTER_WIDTHS = {0, 1280, 1920, 2560, 3840};
+    private static final String[] TRAFFIC_FILTER_LABELS = {"HD+", "480", "360", "240", "144", "Звук"};
+    private static final int[] TRAFFIC_FILTER_WIDTHS = {1280, 854, 640, 426, 256, 0};
+    private static final int[] TRAFFIC_FILTER_HEIGHTS = {720, 480, 360, 240, 144, 0};
     private ImageLoader imageLoader;
     private VideoAdapter adapter;
     private GridView grid;
     private EditText query;
     private TextView status;
     private final List<Button> filterButtons = new ArrayList<>();
+    private Button trafficButton;
     private int selectedFilter;
+    private boolean trafficMode;
     private final List<Future<?>> activeSearches = new ArrayList<>();
     private boolean rutubeDone;
     private boolean vkDone;
@@ -99,9 +106,11 @@ public final class MainActivity extends Activity {
     }
 
     private View createContent() {
+        boolean compact = isCompactLayout();
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(36), dp(24), dp(36), dp(20));
+        root.setPadding(dp(compact ? 12 : 36), dp(compact ? 12 : 24),
+                dp(compact ? 12 : 36), dp(compact ? 12 : 20));
         root.setBackgroundColor(Color.rgb(16, 18, 24));
 
         LinearLayout bar = new LinearLayout(this);
@@ -111,14 +120,14 @@ public final class MainActivity extends Activity {
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.ic_launcher);
         logo.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-        bar.addView(logo, new LinearLayout.LayoutParams(dp(70), dp(60)));
+        bar.addView(logo, new LinearLayout.LayoutParams(dp(compact ? 48 : 70), dp(compact ? 44 : 60)));
 
         query = new EditText(this);
         query.setSingleLine(true);
         query.setTextColor(Color.WHITE);
         query.setHintTextColor(Color.rgb(160, 166, 178));
-        query.setHint("Введите запрос для поиска в RUTUBE, VK Video и Дзене");
-        query.setTextSize(20);
+        query.setHint(compact ? "Найти видео" : "Введите запрос для поиска в RUTUBE, VK Video и Дзене");
+        query.setTextSize(compact ? 17 : 20);
         query.setBackgroundResource(R.drawable.search_field_background);
         query.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
         query.setOnEditorActionListener((v, actionId, event) -> {
@@ -127,18 +136,19 @@ public final class MainActivity extends Activity {
             }
             return false;
         });
-        bar.addView(query, new LinearLayout.LayoutParams(0, dp(40), 1f));
+        bar.addView(query, new LinearLayout.LayoutParams(0, dp(compact ? 44 : 40), 1f));
 
         Button search = new Button(this);
         search.setText("Найти");
         search.setTextColor(Color.WHITE);
         search.setBackgroundResource(R.drawable.search_button_background);
         search.setOnClickListener(v -> search());
-        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(dp(90), dp(40));
-        searchParams.setMargins(dp(8), 0, 0, 0);
+        search.setTextSize(compact ? 12 : 14);
+        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(dp(compact ? 72 : 90), dp(compact ? 44 : 40));
+        searchParams.setMargins(dp(compact ? 6 : 8), 0, 0, 0);
         bar.addView(search, searchParams);
 
-        root.addView(bar, new LinearLayout.LayoutParams(-1, dp(64)));
+        root.addView(bar, new LinearLayout.LayoutParams(-1, dp(compact ? 48 : 64)));
 
         LinearLayout filterBar = new LinearLayout(this);
         filterBar.setOrientation(LinearLayout.HORIZONTAL);
@@ -147,11 +157,11 @@ public final class MainActivity extends Activity {
         LinearLayout filters = new LinearLayout(this);
         filters.setOrientation(LinearLayout.HORIZONTAL);
         filters.setGravity(Gravity.CENTER_VERTICAL);
-        filters.setPadding(dp(70), dp(4), 0, dp(4));
-        for (int i = 0; i < FILTER_LABELS.length; i++) {
+        filters.setPadding(dp(compact ? 0 : 70), dp(4), dp(8), dp(4));
+        for (int i = 0; i < TRAFFIC_FILTER_LABELS.length; i++) {
             final int index = i;
             Button chip = new Button(this);
-            chip.setText(FILTER_LABELS[i]);
+            chip.setText(i < NORMAL_FILTER_LABELS.length ? NORMAL_FILTER_LABELS[i] : "");
             chip.setTextColor(Color.WHITE);
             chip.setTextSize(13);
             chip.setAllCaps(false);
@@ -163,20 +173,44 @@ public final class MainActivity extends Activity {
             filters.addView(chip, chipParams);
             filterButtons.add(chip);
         }
-        filterBar.addView(filters, new LinearLayout.LayoutParams(0, dp(36), 1f));
+        trafficButton = new Button(this);
+        trafficButton.setText("Трафик");
+        trafficButton.setTextColor(Color.WHITE);
+        trafficButton.setTextSize(13);
+        trafficButton.setAllCaps(false);
+        trafficButton.setPadding(dp(14), 0, dp(14), 0);
+        trafficButton.setBackgroundResource(R.drawable.filter_chip_background);
+        trafficButton.setOnClickListener(v -> toggleTrafficMode());
+        LinearLayout.LayoutParams trafficParams = new LinearLayout.LayoutParams(-2, dp(28));
+        trafficParams.setMargins(dp(12), 0, 0, 0);
+        filters.addView(trafficButton, trafficParams);
+        HorizontalScrollView filterScroll = new HorizontalScrollView(this);
+        filterScroll.setHorizontalScrollBarEnabled(false);
+        filterScroll.setFillViewport(!compact);
+        filterScroll.addView(filters, new HorizontalScrollView.LayoutParams(-2, dp(36)));
 
         status = text("", 11, Color.rgb(169, 176, 190));
         status.setGravity(Gravity.CENTER);
         status.setVisibility(View.INVISIBLE);
-        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(dp(90), dp(36));
-        statusParams.setMargins(dp(8), 0, 0, 0);
-        filterBar.addView(status, statusParams);
-        root.addView(filterBar, new LinearLayout.LayoutParams(-1, dp(36)));
+        if (compact) {
+            filterBar.setOrientation(LinearLayout.VERTICAL);
+            filterBar.setGravity(Gravity.NO_GRAVITY);
+            filterBar.addView(filterScroll, new LinearLayout.LayoutParams(-1, dp(36)));
+            status.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+            filterBar.addView(status, new LinearLayout.LayoutParams(-1, dp(26)));
+            root.addView(filterBar, new LinearLayout.LayoutParams(-1, dp(62)));
+        } else {
+            filterBar.addView(filterScroll, new LinearLayout.LayoutParams(0, dp(36), 1f));
+            LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(dp(90), dp(36));
+            statusParams.setMargins(dp(8), 0, 0, 0);
+            filterBar.addView(status, statusParams);
+            root.addView(filterBar, new LinearLayout.LayoutParams(-1, dp(36)));
+        }
 
         grid = new GridView(this);
-        grid.setNumColumns(4);
-        grid.setHorizontalSpacing(dp(14));
-        grid.setVerticalSpacing(dp(14));
+        grid.setNumColumns(gridColumnCount());
+        grid.setHorizontalSpacing(dp(compact ? 8 : 14));
+        grid.setVerticalSpacing(dp(compact ? 8 : 14));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
         grid.setClipToPadding(false);
         grid.setPadding(0, dp(4), 0, dp(20));
@@ -203,7 +237,7 @@ public final class MainActivity extends Activity {
         qualityRequested.clear();
         qualityJobs = 0;
         adapter.notifyDataSetChanged();
-        StateStore.saveSearch(this, value, selectedFilter);
+        StateStore.saveSearch(this, value, selectedFilter, trafficMode);
         rutubeDone = false;
         vkDone = false;
         dzenDone = false;
@@ -223,13 +257,38 @@ public final class MainActivity extends Activity {
     }
 
     private void selectFilter(int index, boolean rerunSearch) {
-        selectedFilter = Math.max(0, Math.min(index, FILTER_LABELS.length - 1));
+        selectedFilter = Math.max(0, Math.min(index, activeFilterLabels().length - 1));
         for (int i = 0; i < filterButtons.size(); i++) filterButtons.get(i).setSelected(i == selectedFilter);
-        if (rerunSearch) StateStore.saveSearch(this, query == null ? "" : query.getText().toString(), selectedFilter);
+        if (rerunSearch) StateStore.saveSearch(this, query == null ? "" : query.getText().toString(), selectedFilter, trafficMode);
         if (rerunSearch && query.getText().toString().trim().length() >= 2) {
             refreshDisplayedItems(false);
             if (selectedFilter > 0) requestMissingQualities(generation.get(), new ArrayList<>(allItems));
         }
+    }
+
+    private void toggleTrafficMode() {
+        trafficMode = !trafficMode;
+        selectedFilter = 0;
+        applyFilterMode();
+        StateStore.saveSearch(this, query == null ? "" : query.getText().toString(), selectedFilter, trafficMode);
+        refreshDisplayedItems(false);
+        if (!allItems.isEmpty()) requestMissingQualities(generation.get(), new ArrayList<>(allItems));
+    }
+
+    private void applyFilterMode() {
+        String[] labels = activeFilterLabels();
+        for (int i = 0; i < filterButtons.size(); i++) {
+            Button button = filterButtons.get(i);
+            boolean visible = i < labels.length;
+            button.setVisibility(visible ? View.VISIBLE : View.GONE);
+            if (visible) button.setText(labels[i]);
+            button.setSelected(visible && i == selectedFilter);
+        }
+        trafficButton.setSelected(trafficMode);
+    }
+
+    private String[] activeFilterLabels() {
+        return trafficMode ? TRAFFIC_FILTER_LABELS : NORMAL_FILTER_LABELS;
     }
 
     private void runSource(int current, String source, SearchCall call) {
@@ -276,12 +335,12 @@ public final class MainActivity extends Activity {
         boolean hadItems = !items.isEmpty();
         boolean gridHadFocus = grid.hasFocus();
         String selectedKey = selectedItemKey();
-        int minWidth = FILTER_WIDTHS[selectedFilter];
+        int minWidth = trafficMode ? TRAFFIC_FILTER_WIDTHS[selectedFilter] : NORMAL_FILTER_WIDTHS[selectedFilter];
         items.clear();
         for (VideoItem item : allItems) {
             if (minWidth == 0 || item.maxWidth >= minWidth) items.add(item);
         }
-        Collections.sort(items, VideoRanker.comparator(currentSearchQuery));
+        Collections.sort(items, VideoRanker.comparator(currentSearchQuery, trafficMode));
         adapter.notifyDataSetChanged();
         restoreGridSelection(selectedKey, gridHadFocus, selectFirst && !hadItems && !items.isEmpty());
         updateSearchStatus();
@@ -358,11 +417,14 @@ public final class MainActivity extends Activity {
 
     private void play(VideoItem item) {
         long position = WatchProgressStore.get(this, item).positionMs;
-        StateStore.savePlayer(this, item, position);
-        launchPlayer(item, position, true);
+        int targetHeight = trafficMode ? TRAFFIC_FILTER_HEIGHTS[selectedFilter] : 0;
+        boolean audioOnly = trafficMode && targetHeight == 0;
+        StateStore.savePlayer(this, item, position, trafficMode, targetHeight, audioOnly);
+        launchPlayer(item, position, true, trafficMode, targetHeight, audioOnly);
     }
 
-    private void launchPlayer(VideoItem item, long position, boolean autoPlay) {
+    private void launchPlayer(VideoItem item, long position, boolean autoPlay,
+                              boolean playerTrafficMode, int targetHeight, boolean audioOnly) {
         try {
             Intent intent = new Intent(this, PlayerActivity.class);
             intent.putExtra("source", item.source);
@@ -372,6 +434,9 @@ public final class MainActivity extends Activity {
             intent.putExtra("duration_ms", item.durationMs);
             intent.putExtra("resume_position", position);
             intent.putExtra("auto_play", autoPlay);
+            intent.putExtra("traffic_mode", playerTrafficMode);
+            intent.putExtra("target_height", targetHeight);
+            intent.putExtra("audio_only", audioOnly);
             startActivity(intent);
         } catch (Throwable error) {
             CrashLog.save(getApplicationContext(), error);
@@ -381,14 +446,19 @@ public final class MainActivity extends Activity {
     }
 
     private void restoreState() {
+        trafficMode = StateStore.trafficMode(this);
         selectedFilter = StateStore.filter(this);
+        selectedFilter = Math.max(0, Math.min(selectedFilter, activeFilterLabels().length - 1));
+        applyFilterMode();
         selectFilter(selectedFilter, false);
         String lastQuery = StateStore.query(this);
         query.setText(lastQuery);
         if ("player".equals(StateStore.screen(this))) {
             VideoItem item = StateStore.playerItem(this);
             if (item != null) {
-                launchPlayer(item, StateStore.position(this), false);
+                launchPlayer(item, StateStore.position(this), false,
+                        StateStore.playerTrafficMode(this), StateStore.playerTargetHeight(this),
+                        StateStore.playerAudioOnly(this));
                 return;
             }
         }
@@ -511,6 +581,21 @@ public final class MainActivity extends Activity {
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private boolean isCompactLayout() {
+        float widthDp = getResources().getDisplayMetrics().widthPixels
+                / getResources().getDisplayMetrics().density;
+        return getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT
+                || widthDp < 720;
+    }
+
+    private int gridColumnCount() {
+        float widthDp = getResources().getDisplayMetrics().widthPixels
+                / getResources().getDisplayMetrics().density;
+        if (getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT) {
+            return widthDp < 600 ? 2 : 3;
+        }
+        return widthDp < 900 ? 3 : 4;
+    }
     private static String safeMessage(Exception e) { return e.getMessage() == null ? "ошибка сети" : e.getMessage(); }
     private interface SearchCall { List<VideoItem> run() throws Exception; }
 
@@ -560,8 +645,7 @@ public final class MainActivity extends Activity {
                 recycled = card;
             } else holder = (Holder) recycled.getTag();
             VideoItem item = getItem(position);
-            String quality = item.qualityLabel();
-            if (quality.endsWith("p")) quality = quality.substring(0, quality.length() - 1);
+            String quality = cardQualityLabel(item);
             holder.source.setText(item.source + (quality.isEmpty() ? "" : " (" + quality + ")"));
             holder.title.setText(item.title);
             String durationLabel = formatDuration(item.durationMs);
@@ -578,6 +662,17 @@ public final class MainActivity extends Activity {
             imageLoader.load(item.thumbnail, holder.image);
             return recycled;
         }
+    }
+
+    private String cardQualityLabel(VideoItem item) {
+        if (trafficMode) {
+            int targetHeight = TRAFFIC_FILTER_HEIGHTS[selectedFilter];
+            if (targetHeight == 0) return "звук";
+            if (item.maxWidth == 0 || item.maxWidth < TRAFFIC_FILTER_WIDTHS[selectedFilter]) return "";
+            return String.valueOf(targetHeight);
+        }
+        String quality = item.qualityLabel();
+        return quality.endsWith("p") ? quality.substring(0, quality.length() - 1) : quality;
     }
 
     private static final class Holder {

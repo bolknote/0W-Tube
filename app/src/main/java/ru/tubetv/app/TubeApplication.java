@@ -13,6 +13,7 @@ public final class TubeApplication extends Application {
             CookieHandler.setDefault(new CookieManager(null, CookiePolicy.ACCEPT_ALL));
         }
         clearObsoleteCrashAfterUpdate();
+        new Thread(DeviceCapabilities::warmUp, "codec-detection").start();
         Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
             CrashLog.save(getApplicationContext(), error);

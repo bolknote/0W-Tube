@@ -1,25 +1,34 @@
 package ru.tubetv.app;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.SeekBar;
 import android.widget.TextView;
 
 import androidx.annotation.OptIn;
+import androidx.core.content.ContextCompat;
+import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.C;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
@@ -55,17 +64,26 @@ public final class PlayerActivity extends Activity {
     private ExoPlayer player;
     private SurfaceView videoSurface;
     private ProgressBar loading;
-    private ProgressBar timeline;
+    private SeekBar timeline;
     private TextView message;
     private TextView playState;
     private TextView time;
     private LinearLayout controls;
+    private FrameLayout.LayoutParams controlsLayoutParams;
     private final Runnable hideControls = () -> controls.setVisibility(View.GONE);
     private String streamUrl;
     private boolean autoPlay;
+    private boolean trafficMode;
+    private boolean audioOnly;
+    private int targetHeight;
+    private boolean scrubbing;
+    private boolean audioMovedToBackground;
+    private boolean leavingPlayer;
     private long resumePosition;
     private long knownDuration;
     private long lastSavedAt;
+    private int videoWidth;
+    private int videoHeight;
     private Thread.UncaughtExceptionHandler previousCrashHandler;
 
     @Override protected void onCreate(Bundle state) {
@@ -76,21 +94,38 @@ public final class PlayerActivity extends Activity {
             if (previousCrashHandler != null) previousCrashHandler.uncaughtException(thread, error);
         });
         autoPlay = getIntent().getBooleanExtra("auto_play", true);
+        trafficMode = getIntent().getBooleanExtra("traffic_mode", false);
+        audioOnly = getIntent().getBooleanExtra("audio_only", false);
+        targetHeight = Math.max(0, getIntent().getIntExtra("target_height", 0));
         resumePosition = Math.max(0L, getIntent().getLongExtra("resume_position", 0L));
+        if (getIntent().getBooleanExtra("resume_background_audio", false)) {
+            stopService(new Intent(this, AudioPlaybackService.class));
+            resumePosition = StateStore.position(this);
+        }
         knownDuration = Math.max(0L, getIntent().getLongExtra("duration_ms", 0L));
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
                 | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
         setContentView(createContent());
+        requestNotificationPermissionForAudio();
         resolveStream();
     }
 
     private View createContent() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
+        root.setOnTouchListener((view, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) showControls();
+            return true;
+        });
         videoSurface = new SurfaceView(this);
         root.addView(videoSurface, new FrameLayout.LayoutParams(-1, -1));
+        ImageView speaker = new ImageView(this);
+        speaker.setImageResource(R.drawable.ic_speaker);
+        speaker.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        speaker.setVisibility(audioOnly ? View.VISIBLE : View.GONE);
+        root.addView(speaker, new FrameLayout.LayoutParams(dp(112), dp(112), Gravity.CENTER));
 
         loading = new ProgressBar(this);
         root.addView(loading, new FrameLayout.LayoutParams(dp(64), dp(64), Gravity.CENTER));
@@ -105,32 +140,64 @@ public final class PlayerActivity extends Activity {
         controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
         controls.setBackgroundResource(R.drawable.player_controls_background);
-        controls.setVisibility(View.GONE);
+        controls.setVisibility(audioOnly ? View.VISIBLE : View.GONE);
 
-        TextView title = label(getIntent().getStringExtra("title"), 17);
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = label(getIntent().getStringExtra("title"), isCompactPlayer() ? 14 : 17);
         title.setSingleLine(true);
-        controls.addView(title, new LinearLayout.LayoutParams(-1, dp(28)));
+        time = label("0:00 / 0:00", isCompactPlayer() ? 12 : 14);
+        time.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        titleRow.addView(title, new LinearLayout.LayoutParams(0, dp(28), 1f));
+        titleRow.addView(time, new LinearLayout.LayoutParams(dp(isCompactPlayer() ? 112 : 150), dp(28)));
+        controls.addView(titleRow, new LinearLayout.LayoutParams(-1, dp(28)));
 
-        timeline = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        timeline = new SeekBar(this);
         timeline.setMax(1000);
-        controls.addView(timeline, new LinearLayout.LayoutParams(-1, dp(12)));
+        timeline.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                if (!fromUser || player == null) return;
+                long duration = player.getDuration();
+                if (duration > 0 && duration != C.TIME_UNSET) {
+                    long position = duration * progress / 1000L;
+                    time.setText(formatTime(position) + " / " + formatTime(duration));
+                }
+            }
+
+            @Override public void onStartTrackingTouch(SeekBar bar) {
+                scrubbing = true;
+                ui.removeCallbacks(hideControls);
+            }
+
+            @Override public void onStopTrackingTouch(SeekBar bar) {
+                if (player != null) {
+                    long duration = player.getDuration();
+                    if (duration > 0 && duration != C.TIME_UNSET) {
+                        player.seekTo(duration * bar.getProgress() / 1000L);
+                    }
+                }
+                scrubbing = false;
+                showControls();
+            }
+        });
+        controls.addView(timeline, new LinearLayout.LayoutParams(-1, dp(22)));
 
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
         TextView rewind = controlButton("◀  −15 сек");
         playState = controlButton("▶");
         TextView forward = controlButton("+30 сек  ▶");
-        time = label("0:00 / 0:00", 15);
-        time.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        row.addView(rewind, new LinearLayout.LayoutParams(dp(150), dp(42)));
-        row.addView(playState, new LinearLayout.LayoutParams(dp(90), dp(42)));
-        row.addView(forward, new LinearLayout.LayoutParams(dp(150), dp(42)));
-        row.addView(time, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        rewind.setOnClickListener(v -> seekBy(-15_000));
+        playState.setOnClickListener(v -> togglePlayback());
+        forward.setOnClickListener(v -> seekBy(30_000));
+        row.addView(rewind, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        row.addView(playState, new LinearLayout.LayoutParams(0, dp(42), 0.65f));
+        row.addView(forward, new LinearLayout.LayoutParams(0, dp(42), 1f));
         controls.addView(row, new LinearLayout.LayoutParams(-1, dp(46)));
 
-        FrameLayout.LayoutParams panel = new FrameLayout.LayoutParams(-1, dp(112), Gravity.BOTTOM);
-        panel.setMargins(dp(28), 0, dp(28), dp(24));
-        root.addView(controls, panel);
+        controlsLayoutParams = new FrameLayout.LayoutParams(-1, dp(122), Gravity.BOTTOM);
+        applyControlsLayout();
+        root.addView(controls, controlsLayoutParams);
         return root;
     }
 
@@ -192,9 +259,11 @@ public final class PlayerActivity extends Activity {
                 .setReadTimeoutMs(10_000)
                 .setAllowCrossProtocolRedirects(true)
                 .setDefaultRequestProperties(headers);
-        MediaCodecSelector hardwareVideoSelector = (mimeType, secure, tunneling) -> {
+        DeviceCapabilities capabilities = DeviceCapabilities.get();
+        MediaCodecSelector hardwareSelector = (mimeType, secure, tunneling) -> {
             List<MediaCodecInfo> available = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling);
-            if (!mimeType.startsWith("video/")) return available;
+            if (!mimeType.startsWith("video/") && !mimeType.startsWith("audio/")) return available;
+            if (!capabilities.supportsHardware(mimeType)) return new ArrayList<>();
             List<MediaCodecInfo> hardware = new ArrayList<>();
             for (MediaCodecInfo codec : available) {
                 if (codec.hardwareAccelerated && !codec.softwareOnly) hardware.add(codec);
@@ -203,21 +272,41 @@ public final class PlayerActivity extends Activity {
         };
         player = new ExoPlayer.Builder(this)
                 .setRenderersFactory(new DefaultRenderersFactory(this)
-                        .setMediaCodecSelector(hardwareVideoSelector)
+                        .setMediaCodecSelector(hardwareSelector)
                         .setEnableDecoderFallback(true))
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(http))
                 .build();
-        player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
-                .setMaxVideoSize(3840, 2160)
-                .setForceHighestSupportedBitrate(true)
-                .build());
+        androidx.media3.common.TrackSelectionParameters.Builder tracks =
+                player.getTrackSelectionParameters().buildUpon();
+        String[] preferredVideo = capabilities.preferredVideoMimes(trafficMode);
+        String[] preferredAudio = capabilities.preferredAudioMimes(trafficMode);
+        if (preferredVideo.length > 0) tracks.setPreferredVideoMimeTypes(preferredVideo);
+        if (preferredAudio.length > 0) tracks.setPreferredAudioMimeTypes(preferredAudio);
+        if (trafficMode) {
+            int[] size = videoSizeForHeight(targetHeight == 0 ? 144 : targetHeight);
+            tracks.setMaxVideoSize(size[0], size[1])
+                    .setForceHighestSupportedBitrate(!audioOnly)
+                    .setForceLowestBitrate(audioOnly);
+            if (audioOnly) {
+                tracks.setMaxVideoBitrate(144_000)
+                        .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true);
+                videoSurface.setVisibility(View.INVISIBLE);
+            }
+        } else {
+            tracks.setMaxVideoSize(3840, 2160).setForceHighestSupportedBitrate(true);
+        }
+        player.setTrackSelectionParameters(tracks.build());
+        player.setAudioAttributes(new AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                .build(), true);
         player.setVideoSurfaceView(videoSurface);
         player.addListener(new Player.Listener() {
             @Override public void onPlaybackStateChanged(int state) {
                 if (state == Player.STATE_READY) {
                     loading.setVisibility(View.GONE);
                     message.setVisibility(View.GONE);
-                    if (!autoPlay) showControls();
+                    if (!autoPlay || audioOnly) showControls();
                 } else if (state == Player.STATE_ENDED) {
                     showControls();
                 }
@@ -226,12 +315,14 @@ public final class PlayerActivity extends Activity {
             @Override public void onIsPlayingChanged(boolean isPlaying) {
                 updateControls();
                 ui.removeCallbacks(hideControls);
-                if (isPlaying && controls.getVisibility() == View.VISIBLE) {
+                if (!audioOnly && isPlaying && controls.getVisibility() == View.VISIBLE) {
                     ui.postDelayed(hideControls, 3500);
                 }
             }
 
             @Override public void onVideoSizeChanged(VideoSize size) {
+                videoWidth = size.width;
+                videoHeight = size.height;
                 fitSurface(size.width, size.height);
             }
 
@@ -252,19 +343,21 @@ public final class PlayerActivity extends Activity {
         controls.setVisibility(View.VISIBLE);
         updateControls();
         ui.removeCallbacks(hideControls);
-        if (player != null && player.isPlaying()) ui.postDelayed(hideControls, 3500);
+        if (!audioOnly && player != null && player.isPlaying()) ui.postDelayed(hideControls, 3500);
     }
 
     private void updateControls() {
         if (player == null) return;
         long position = Math.max(0, player.getCurrentPosition());
         long duration = player.getDuration();
-        if (duration <= 0 || duration == androidx.media3.common.C.TIME_UNSET) {
-            timeline.setProgress(0);
-            time.setText(formatTime(position) + " / —");
-        } else {
-            timeline.setProgress((int) Math.min(1000, position * 1000 / duration));
-            time.setText(formatTime(position) + " / " + formatTime(duration));
+        if (!scrubbing) {
+            if (duration <= 0 || duration == C.TIME_UNSET) {
+                timeline.setProgress(0);
+                time.setText(formatTime(position) + " / —");
+            } else {
+                timeline.setProgress((int) Math.min(1000, position * 1000 / duration));
+                time.setText(formatTime(position) + " / " + formatTime(duration));
+            }
         }
         playState.setText(player.isPlaying() ? "Ⅱ" : "▶");
         long now = System.currentTimeMillis();
@@ -272,6 +365,31 @@ public final class PlayerActivity extends Activity {
             StateStore.savePlayerPosition(this, position);
             saveWatchProgress(position, duration);
             lastSavedAt = now;
+        }
+    }
+
+    private void togglePlayback() {
+        if (player == null) return;
+        if (player.isPlaying()) player.pause(); else player.play();
+        showControls();
+    }
+
+    private void seekBy(long deltaMs) {
+        if (player == null) return;
+        long target = Math.max(0, player.getCurrentPosition() + deltaMs);
+        long duration = player.getDuration();
+        if (duration > 0 && duration != C.TIME_UNSET) target = Math.min(target, duration);
+        player.seekTo(target);
+        showControls();
+    }
+
+    private static int[] videoSizeForHeight(int height) {
+        switch (height) {
+            case 720: return new int[]{1280, 720};
+            case 480: return new int[]{854, 480};
+            case 360: return new int[]{640, 360};
+            case 240: return new int[]{426, 240};
+            default: return new int[]{256, 144};
         }
     }
 
@@ -293,6 +411,27 @@ public final class PlayerActivity extends Activity {
                 Math.round(width * ratio), Math.round(height * ratio), Gravity.CENTER));
     }
 
+    private boolean isCompactPlayer() {
+        float widthDp = getResources().getDisplayMetrics().widthPixels
+                / getResources().getDisplayMetrics().density;
+        return getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT
+                || widthDp < 720;
+    }
+
+    private void applyControlsLayout() {
+        if (controlsLayoutParams == null) return;
+        int horizontal = isCompactPlayer() ? 10 : 28;
+        int bottom = isCompactPlayer() ? 10 : 24;
+        controlsLayoutParams.setMargins(dp(horizontal), 0, dp(horizontal), dp(bottom));
+        if (controls != null) controls.setLayoutParams(controlsLayoutParams);
+    }
+
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        applyControlsLayout();
+        if (videoWidth > 0 && videoHeight > 0) fitSurface(videoWidth, videoHeight);
+    }
+
     private void showError(String text) {
         loading.setVisibility(View.GONE);
         controls.setVisibility(View.GONE);
@@ -304,21 +443,16 @@ public final class PlayerActivity extends Activity {
         if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER
                 || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
             if (player != null && player.getPlaybackState() != Player.STATE_IDLE) {
-                if (player.isPlaying()) player.pause(); else player.play();
-                showControls();
+                togglePlayback();
             } else openOfficial();
             return true;
         }
         if (player != null && keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
-            player.seekTo(Math.max(0, player.getCurrentPosition() - 15_000));
-            showControls();
+            seekBy(-15_000);
             return true;
         }
         if (player != null && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
-            long target = player.getCurrentPosition() + 30_000;
-            if (player.getDuration() > 0) target = Math.min(target, player.getDuration());
-            player.seekTo(target);
-            showControls();
+            seekBy(30_000);
             return true;
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
@@ -329,6 +463,7 @@ public final class PlayerActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        leavingPlayer = true;
         saveProgress();
         StateStore.markSearch(this);
         super.onBackPressed();
@@ -361,13 +496,61 @@ public final class PlayerActivity extends Activity {
 
     @Override protected void onStart() {
         super.onStart();
+        if (audioMovedToBackground) {
+            stopService(new Intent(this, AudioPlaybackService.class));
+            if (player != null) {
+                player.seekTo(StateStore.position(this));
+                player.play();
+            }
+            audioMovedToBackground = false;
+        }
         if (player != null && !player.isPlaying()) showControls();
     }
 
     @Override protected void onStop() {
         saveProgress();
-        if (player != null) player.pause();
+        if (player != null) {
+            boolean keepAudio = audioOnly && !DeviceType.isTelevision(this)
+                    && player.isPlaying() && streamUrl != null && !leavingPlayer && !isFinishing();
+            player.pause();
+            if (keepAudio) startBackgroundAudio();
+        }
         super.onStop();
+    }
+
+    private void startBackgroundAudio() {
+        Intent background = new Intent(this, AudioPlaybackService.class)
+                .setAction(AudioPlaybackService.ACTION_PLAY);
+        if (getIntent().getExtras() != null) background.putExtras(getIntent().getExtras());
+        background.putExtra("stream_url", streamUrl);
+        background.putExtra("resume_position", player == null ? 0L : player.getCurrentPosition());
+        background.putExtra("duration_ms", knownDuration);
+        try {
+            ContextCompat.startForegroundService(this, background);
+            audioMovedToBackground = true;
+        } catch (RuntimeException ignored) {
+            audioMovedToBackground = false;
+        }
+    }
+
+    private void requestNotificationPermissionForAudio() {
+        if (!audioOnly || DeviceType.isTelevision(this) || Build.VERSION.SDK_INT < 33) return;
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 5803);
+        }
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (!intent.getBooleanExtra("resume_background_audio", false)) return;
+        stopService(new Intent(this, AudioPlaybackService.class));
+        if (player != null) {
+            player.seekTo(StateStore.position(this));
+            player.play();
+            showControls();
+        }
+        audioMovedToBackground = false;
     }
 
     @Override protected void onDestroy() {
