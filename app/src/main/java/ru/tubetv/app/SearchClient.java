@@ -42,7 +42,11 @@ final class SearchClient {
     }
 
     List<VideoItem> searchVk(String query, int minWidth) throws Exception {
-        return new VkWebClient().search(query, minWidth);
+        return searchVk(query, minWidth, 480);
+    }
+
+    List<VideoItem> searchVk(String query, int minWidth, int thumbnailWidth) throws Exception {
+        return new VkWebClient().search(query, minWidth, thumbnailWidth);
     }
 
     List<VideoItem> searchDzen(String query, int minWidth) throws Exception {
@@ -92,7 +96,7 @@ final class SearchClient {
         connection.setConnectTimeout(TIMEOUT_MS);
         connection.setReadTimeout(TIMEOUT_MS);
         connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty("User-Agent", "0W-Tube/0.5.9 AndroidTV");
+        connection.setRequestProperty("User-Agent", "0W-Tube/0.5.10 AndroidTV");
         try {
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("HTTP " + code);

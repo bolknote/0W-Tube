@@ -10,8 +10,8 @@ android {
         applicationId 'ru.tubetv.app'
         minSdk 23
         targetSdk 35
-        versionCode 17
-        versionName '0.5.9'
+        versionCode 18
+        versionName '0.5.10'
     }
 
     compileOptions {
@@ -43,4 +43,5 @@ dependencies {
     implementation 'androidx.core:core:1.17.0'
     implementation 'androidx.media3:media3-exoplayer:1.10.1'
     implementation 'androidx.media3:media3-exoplayer-hls:1.10.1'
+    implementation 'androidx.media3:media3-exoplayer-dash:1.10.1'
 }

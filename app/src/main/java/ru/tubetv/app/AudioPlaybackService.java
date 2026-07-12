@@ -74,12 +74,13 @@ public final class AudioPlaybackService extends Service {
         pageUrl = intent.getStringExtra("page_url");
         knownDuration = Math.max(0L, intent.getLongExtra("duration_ms", 0L));
         startForeground(NOTIFICATION_ID, buildNotification(intent));
-        startPlayer(streamUrl, Math.max(0L, intent.getLongExtra("resume_position", 0L)));
+        startPlayer(streamUrl, intent.getStringExtra("stream_mime_type"),
+                Math.max(0L, intent.getLongExtra("resume_position", 0L)));
         return START_NOT_STICKY;
     }
 
     @OptIn(markerClass = UnstableApi.class)
-    private void startPlayer(String streamUrl, long position) {
+    private void startPlayer(String streamUrl, String streamMimeType, long position) {
         releasePlayer();
         Map<String, String> headers = new HashMap<>();
         boolean vk = "VK VIDEO".equals(source);
@@ -132,7 +133,9 @@ public final class AudioPlaybackService extends Service {
             }
         });
         MediaItem.Builder item = new MediaItem.Builder().setUri(streamUrl);
-        if (streamUrl.contains(".m3u8")) item.setMimeType(MimeTypes.APPLICATION_M3U8);
+        if (streamMimeType != null) item.setMimeType(streamMimeType);
+        else if (streamUrl.contains(".m3u8")) item.setMimeType(MimeTypes.APPLICATION_M3U8);
+        else if (streamUrl.contains(".mpd")) item.setMimeType(MimeTypes.APPLICATION_MPD);
         player.setMediaItem(item.build());
         if (position > 0) player.seekTo(position);
         player.prepare();
@@ -144,6 +147,7 @@ public final class AudioPlaybackService extends Service {
         Intent open = new Intent(this, PlayerActivity.class);
         if (sourceIntent.getExtras() != null) open.putExtras(sourceIntent.getExtras());
         open.removeExtra("stream_url");
+        open.removeExtra("stream_mime_type");
         open.putExtra("resume_background_audio", true);
         open.putExtra("auto_play", true);
         open.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);

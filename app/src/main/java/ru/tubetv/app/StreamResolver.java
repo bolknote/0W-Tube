@@ -20,24 +20,32 @@ final class StreamResolver {
     private static final ConcurrentHashMap<String, PlaybackInfo> CACHE = new ConcurrentHashMap<>();
 
     String resolve(String resolverUrl) throws Exception {
+        return resolveForPlayback(resolverUrl, false).streamUrl;
+    }
+
+    PlaybackInfo resolveForPlayback(String resolverUrl, boolean audioOnly) throws Exception {
         if (resolverUrl != null && (resolverUrl.contains("dzen.ru/video/")
                 || resolverUrl.contains("zen.yandex.ru/video/"))) {
-            return inspectDzen(resolverUrl, true).streamUrl;
+            return inspectDzen(resolverUrl, true, audioOnly);
         }
-        return inspect(resolverUrl).streamUrl;
+        if (resolverUrl != null && (resolverUrl.contains("vkvideo.ru/")
+                || resolverUrl.contains("vk.com/video"))) {
+            return inspectVk(resolverUrl, audioOnly);
+        }
+        return inspectRutube(resolverUrl, audioOnly);
     }
 
     PlaybackInfo inspect(String url) throws Exception {
         if (url != null && (url.contains("dzen.ru/video/") || url.contains("zen.yandex.ru/video/"))) {
-            return inspectDzen(url, false);
+            return inspectDzen(url, false, false);
         }
         if (url != null && (url.contains("vkvideo.ru/") || url.contains("vk.com/video"))) {
-            return inspectVk(url);
+            return inspectVk(url, false);
         }
-        return inspectRutube(url);
+        return inspectRutube(url, false);
     }
 
-    private PlaybackInfo inspectDzen(String url, boolean forPlayback) throws Exception {
+    private PlaybackInfo inspectDzen(String url, boolean forPlayback, boolean audioOnly) throws Exception {
         String id = findDzenId(url);
         String cacheKey = "dzen:" + id;
         if (!forPlayback) {
@@ -58,17 +66,28 @@ final class StreamResolver {
         if (video == null) throw new Exception("Дзен не отдал публичный поток");
 
         String hls = null;
+        String dash = null;
         String fallback = null;
+        String audioFallback = null;
         String direct = httpUrl(video.optString("id"));
-        if (isHls(direct)) hls = direct;
-        else if (direct != null) fallback = direct;
+        if (isDash(direct)) dash = direct;
+        else if (isHls(direct)) hls = direct;
+        else if (direct != null) {
+            fallback = direct;
+            audioFallback = direct;
+        }
         JSONArray streams = video.optJSONArray("streams");
         if (streams != null) {
             for (int i = 0; i < streams.length(); i++) {
                 String candidate = httpUrl(streams.optString(i));
                 if (candidate == null) continue;
+                if (dash == null && isDash(candidate)) dash = candidate;
                 if (hls == null && isHls(candidate)) hls = candidate;
                 if (fallback == null && candidate.contains("ct=0")) fallback = candidate;
+                if (candidate.contains("ct=0")
+                        && (audioFallback == null || candidate.contains("type=4"))) {
+                    audioFallback = candidate;
+                }
             }
         }
         JSONArray oneVideo = video.optJSONArray("oneVideoStreams");
@@ -77,11 +96,29 @@ final class StreamResolver {
                 JSONObject item = oneVideo.optJSONObject(i);
                 String candidate = item == null ? null : httpUrl(item.optString("url"));
                 if (candidate == null) continue;
+                if (dash == null && ("dash".equals(item.optString("type")) || isDash(candidate))) dash = candidate;
                 if (hls == null && ("hls".equals(item.optString("type")) || isHls(candidate))) hls = candidate;
                 if (fallback == null && "fullhd".equals(item.optString("type"))) fallback = candidate;
+                if (candidate.contains("ct=0")
+                        && (audioFallback == null || candidate.contains("type=4"))) {
+                    audioFallback = candidate;
+                }
             }
         }
-        String stream = hls != null ? hls : fallback;
+        String stream;
+        String mime;
+        if (audioOnly && dash != null && hasDashAudio(dash, null, DzenClient.USER_AGENT)) {
+            stream = dash;
+            mime = "application/dash+xml";
+        } else if (hls != null) {
+            String separateAudio = audioOnly
+                    ? findHlsAudioRendition(hls, null, DzenClient.USER_AGENT) : null;
+            stream = separateAudio != null ? separateAudio : hls;
+            mime = "application/x-mpegURL";
+        } else {
+            stream = audioOnly && audioFallback != null ? audioFallback : fallback;
+            mime = null;
+        }
         if (stream == null) throw new Exception("Нет совместимого потока Дзен");
 
         int maxWidth = 0;
@@ -97,14 +134,14 @@ final class StreamResolver {
             maxWidth = 1920;
             maxHeight = 1080;
         }
-        PlaybackInfo result = new PlaybackInfo(stream, maxWidth, maxHeight);
+        PlaybackInfo result = new PlaybackInfo(stream, mime, maxWidth, maxHeight);
         if (!forPlayback) CACHE.put(cacheKey, result);
         return result;
     }
 
-    private PlaybackInfo inspectRutube(String url) throws Exception {
+    private PlaybackInfo inspectRutube(String url, boolean audioOnly) throws Exception {
         String id = findRutubeId(url);
-        String cacheKey = "rutube:" + id;
+        String cacheKey = "rutube:" + id + (audioOnly ? ":audio" : "");
         PlaybackInfo cached = CACHE.get(cacheKey);
         if (cached != null && System.currentTimeMillis() - cached.loadedAt < CACHE_MS) return cached;
         JSONObject options = new JSONObject(get("https://rutube.ru/api/play/options/" + id + "/?format=json",
@@ -113,6 +150,7 @@ final class StreamResolver {
         if (balancer == null) throw new Exception("RUTUBE не отдал поток");
         String fallback = null;
         String hls = null;
+        String dash = null;
         int maxWidth = 0;
         int maxHeight = 0;
         for (Iterator<String> it = balancer.keys(); it.hasNext();) {
@@ -123,19 +161,34 @@ final class StreamResolver {
                 maxWidth = dimensions[0];
                 maxHeight = dimensions[1];
             }
-            if (hls == null && value.contains(".m3u8")) hls = value;
+            if (dash == null && isDash(value)) dash = value;
+            if (hls == null && isHls(value)) hls = value;
             if (fallback == null && value.startsWith("http")) fallback = value;
         }
-        String stream = hls != null ? hls : fallback;
+        String stream;
+        String mime;
+        if (audioOnly && dash != null && hasDashAudio(dash,
+                "https://rutube.ru/video/" + id + "/", null)) {
+            stream = dash;
+            mime = "application/dash+xml";
+        } else if (hls != null) {
+            String separateAudio = audioOnly ? findHlsAudioRendition(hls,
+                    "https://rutube.ru/video/" + id + "/", null) : null;
+            stream = separateAudio != null ? separateAudio : hls;
+            mime = "application/x-mpegURL";
+        } else {
+            stream = fallback;
+            mime = null;
+        }
         if (stream == null) throw new Exception("Нет совместимого потока RUTUBE");
-        PlaybackInfo result = new PlaybackInfo(stream, maxWidth, maxHeight);
+        PlaybackInfo result = new PlaybackInfo(stream, mime, maxWidth, maxHeight);
         CACHE.put(cacheKey, result);
         return result;
     }
 
-    private PlaybackInfo inspectVk(String url) throws Exception {
+    private PlaybackInfo inspectVk(String url, boolean audioOnly) throws Exception {
         String id = findVkId(url);
-        String cacheKey = "vk:" + id;
+        String cacheKey = "vk:" + id + (audioOnly ? ":audio" : "");
         PlaybackInfo cached = CACHE.get(cacheKey);
         if (cached != null && System.currentTimeMillis() - cached.loadedAt < CACHE_MS) return cached;
 
@@ -155,29 +208,93 @@ final class StreamResolver {
 
         String hls = httpUrl(data.optString("hls"));
         if (hls == null) hls = httpUrl(data.optString("hls_fmp4"));
+        String dash = httpUrl(data.optString("dash"));
         String fallback = null;
         int bestHeight = 0;
+        String lowestFallback = null;
+        int lowestHeight = Integer.MAX_VALUE;
         for (Iterator<String> it = data.keys(); it.hasNext();) {
             String key = it.next();
             String value = httpUrl(data.optString(key));
             if (value == null) continue;
             if (hls == null && key.startsWith("hls") && !key.contains("live_playback")) hls = value;
+            if (dash == null && key.startsWith("dash") && !key.contains("live_playback")
+                    && !"dash_uni".equals(key)) dash = value;
             int height = qualityHeight(key);
             if (height > bestHeight) {
                 bestHeight = height;
                 fallback = value;
             }
+            if (height > 0 && height < lowestHeight) {
+                lowestHeight = height;
+                lowestFallback = value;
+            }
         }
-        String stream = hls != null ? hls : fallback;
+        String stream;
+        String mime;
+        if (audioOnly && dash != null && hasDashAudio(dash, "https://vkvideo.ru/", null)) {
+            stream = dash;
+            mime = "application/dash+xml";
+        } else if (hls != null) {
+            String separateAudio = audioOnly ? findHlsAudioRendition(hls,
+                    "https://vkvideo.ru/", null) : null;
+            stream = separateAudio != null ? separateAudio : hls;
+            mime = "application/x-mpegURL";
+        } else {
+            stream = audioOnly && lowestFallback != null ? lowestFallback : fallback;
+            mime = null;
+        }
         if (stream == null) throw new Exception("Нет совместимого потока VK Video");
         int bestWidth = bestHeight <= 0 ? 0 : Math.round(bestHeight * 16f / 9f);
-        PlaybackInfo result = new PlaybackInfo(stream, bestWidth, bestHeight);
+        PlaybackInfo result = new PlaybackInfo(stream, mime, bestWidth, bestHeight);
         CACHE.put(cacheKey, result);
         return result;
     }
 
     private static boolean isHls(String value) {
         return value != null && (value.contains(".m3u8") || value.contains("ct=8"));
+    }
+
+    private static boolean isDash(String value) {
+        return value != null && (value.contains(".mpd") || value.contains("ct=6"));
+    }
+
+    private static String findHlsAudioRendition(String hlsUrl, String referer, String userAgent) {
+        try {
+            String manifest = userAgent == null ? get(hlsUrl, referer) : get(hlsUrl, referer, userAgent);
+            String first = null;
+            for (String line : manifest.split("\\r?\\n")) {
+                if (!line.startsWith("#EXT-X-MEDIA:") || !line.contains("TYPE=AUDIO")) continue;
+                String uri = attribute(line, "URI");
+                if (uri == null) continue;
+                String resolved = new URL(new URL(hlsUrl), uri).toString();
+                if (line.contains("DEFAULT=YES")) return resolved;
+                if (first == null) first = resolved;
+            }
+            return first;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static boolean hasDashAudio(String dashUrl, String referer, String userAgent) {
+        try {
+            String manifest = userAgent == null ? get(dashUrl, referer) : get(dashUrl, referer, userAgent);
+            return manifest.contains("contentType=\"audio\"")
+                    || manifest.contains("mimeType=\"audio/")
+                    || manifest.contains("<AudioChannelConfiguration");
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static String attribute(String line, String name) {
+        String marker = name + "=\"";
+        int start = line.indexOf(marker);
+        if (start < 0) return null;
+        start += marker.length();
+        int end = line.indexOf('"', start);
+        return end > start ? line.substring(start, end) : null;
     }
 
     private static String jsonObjectAt(String value, int start) throws Exception {

@@ -72,6 +72,7 @@ public final class PlayerActivity extends Activity {
     private FrameLayout.LayoutParams controlsLayoutParams;
     private final Runnable hideControls = () -> controls.setVisibility(View.GONE);
     private String streamUrl;
+    private String streamMimeType;
     private boolean autoPlay;
     private boolean trafficMode;
     private boolean audioOnly;
@@ -220,8 +221,12 @@ public final class PlayerActivity extends Activity {
         String url = getIntent().getStringExtra("resolver_url");
         resolver.execute(() -> {
             try {
-                String resolved = new StreamResolver().resolve(url);
-                runOnUiThread(() -> { streamUrl = resolved; startPlayerSafely(); });
+                PlaybackInfo resolved = new StreamResolver().resolveForPlayback(url, audioOnly);
+                runOnUiThread(() -> {
+                    streamUrl = resolved.streamUrl;
+                    streamMimeType = resolved.streamMimeType;
+                    startPlayerSafely();
+                });
             } catch (Exception error) {
                 runOnUiThread(() -> showError(error.getMessage() == null ? "Видео больше недоступно" : error.getMessage()));
             }
@@ -334,7 +339,9 @@ public final class PlayerActivity extends Activity {
             }
         });
         MediaItem.Builder item = new MediaItem.Builder().setUri(streamUrl);
-        if (streamUrl.contains(".m3u8")) item.setMimeType(MimeTypes.APPLICATION_M3U8);
+        if (streamMimeType != null) item.setMimeType(streamMimeType);
+        else if (streamUrl.contains(".m3u8")) item.setMimeType(MimeTypes.APPLICATION_M3U8);
+        else if (streamUrl.contains(".mpd")) item.setMimeType(MimeTypes.APPLICATION_MPD);
         player.setMediaItem(item.build());
         if (resumePosition > 0) player.seekTo(resumePosition);
         player.setPlayWhenReady(autoPlay);
@@ -526,6 +533,7 @@ public final class PlayerActivity extends Activity {
                 .setAction(AudioPlaybackService.ACTION_PLAY);
         if (getIntent().getExtras() != null) background.putExtras(getIntent().getExtras());
         background.putExtra("stream_url", streamUrl);
+        background.putExtra("stream_mime_type", streamMimeType);
         background.putExtra("resume_position", player == null ? 0L : player.getCurrentPosition());
         background.putExtra("duration_ms", knownDuration);
         try {

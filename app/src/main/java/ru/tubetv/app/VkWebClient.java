@@ -28,7 +28,7 @@ final class VkWebClient {
     private static String anonymousToken;
     private static long tokenExpiresAt;
 
-    List<VideoItem> search(String query, int minWidth) throws Exception {
+    List<VideoItem> search(String query, int minWidth, int thumbnailWidth) throws Exception {
         String address = "https://api.vkvideo.ru/method/catalog.getVideoSearchWeb2"
                 + "?v=" + API_VERSION
                 + "&client_id=" + CLIENT_ID
@@ -65,7 +65,7 @@ final class VkWebClient {
             long videoId = video.optLong("id");
             String page = "https://vkvideo.ru/video" + owner + "_" + videoId;
             result.add(new VideoItem("VK VIDEO", video.optString("title", "Видео VK"),
-                    "", bestImage(video.optJSONArray("image")), page, page,
+                    "", bestImage(video.optJSONArray("image"), thumbnailWidth), page, page,
                     video.optLong("duration") * 1000L));
             if (result.size() >= LIMIT) break;
         }
@@ -104,21 +104,28 @@ final class VkWebClient {
         return video.optLong("owner_id") + "_" + video.optLong("id");
     }
 
-    private static String bestImage(JSONArray images) {
+    private static String bestImage(JSONArray images, int targetWidth) {
         if (images == null) return "";
-        String best = "";
-        int bestWidth = 0;
+        String smallestSuitable = "";
+        int smallestSuitableWidth = Integer.MAX_VALUE;
+        String largestFallback = "";
+        int largestFallbackWidth = 0;
         for (int i = 0; i < images.length(); i++) {
             JSONObject image = images.optJSONObject(i);
             if (image == null) continue;
             int width = image.optInt("width");
             String url = image.optString("url");
-            if (!url.isEmpty() && width > bestWidth && width <= 1280) {
-                bestWidth = width;
-                best = url;
+            if (url.isEmpty() || width <= 0) continue;
+            if (width > largestFallbackWidth) {
+                largestFallbackWidth = width;
+                largestFallback = url;
+            }
+            if (width >= targetWidth && width < smallestSuitableWidth) {
+                smallestSuitableWidth = width;
+                smallestSuitable = url;
             }
         }
-        return best;
+        return smallestSuitable.isEmpty() ? largestFallback : smallestSuitable;
     }
 
     private static JSONObject getJson(String address) throws Exception {

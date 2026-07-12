@@ -24,6 +24,7 @@ import android.widget.FrameLayout;
 import android.widget.GridView;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
+import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -62,9 +63,10 @@ public final class MainActivity extends Activity {
     private EditText query;
     private TextView status;
     private final List<Button> filterButtons = new ArrayList<>();
-    private Button trafficButton;
+    private ImageButton trafficButton;
     private int selectedFilter;
     private boolean trafficMode;
+    private int thumbnailTargetWidth;
     private final List<Future<?>> activeSearches = new ArrayList<>();
     private boolean rutubeDone;
     private boolean vkDone;
@@ -173,15 +175,16 @@ public final class MainActivity extends Activity {
             filters.addView(chip, chipParams);
             filterButtons.add(chip);
         }
-        trafficButton = new Button(this);
-        trafficButton.setText("Трафик");
-        trafficButton.setTextColor(Color.WHITE);
-        trafficButton.setTextSize(13);
-        trafficButton.setAllCaps(false);
-        trafficButton.setPadding(dp(14), 0, dp(14), 0);
+        trafficButton = new ImageButton(this);
+        trafficButton.setImageResource(R.drawable.ic_tortoise);
+        trafficButton.setContentDescription("Трафик");
+        trafficButton.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        trafficButton.setPadding(dp(5), dp(4), dp(5), dp(4));
+        trafficButton.setMinimumWidth(0);
+        trafficButton.setMinimumHeight(0);
         trafficButton.setBackgroundResource(R.drawable.filter_chip_background);
         trafficButton.setOnClickListener(v -> toggleTrafficMode());
-        LinearLayout.LayoutParams trafficParams = new LinearLayout.LayoutParams(-2, dp(28));
+        LinearLayout.LayoutParams trafficParams = new LinearLayout.LayoutParams(dp(44), dp(28));
         trafficParams.setMargins(dp(12), 0, 0, 0);
         filters.addView(trafficButton, trafficParams);
         HorizontalScrollView filterScroll = new HorizontalScrollView(this);
@@ -208,7 +211,8 @@ public final class MainActivity extends Activity {
         }
 
         grid = new GridView(this);
-        grid.setNumColumns(gridColumnCount());
+        int columns = gridColumnCount();
+        grid.setNumColumns(columns);
         grid.setHorizontalSpacing(dp(compact ? 8 : 14));
         grid.setVerticalSpacing(dp(compact ? 8 : 14));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
@@ -222,6 +226,10 @@ public final class MainActivity extends Activity {
         grid.setAdapter(adapter);
         grid.setOnItemClickListener((parent, view, position, id) -> play(items.get(position)));
         root.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1f));
+        int contentWidth = getResources().getDisplayMetrics().widthPixels
+                - dp(compact ? 24 : 72) - dp(compact ? 8 : 14) * (columns - 1);
+        int columnWidth = contentWidth / columns;
+        thumbnailTargetWidth = Math.max(1, columnWidth - dp(14));
         return root;
     }
 
@@ -251,7 +259,8 @@ public final class MainActivity extends Activity {
         activeSearches.add(network.submit(
                 () -> runSource(current, "RUTUBE", () -> searchClient.searchRutube(value, 0))));
         activeSearches.add(network.submit(
-                () -> runSource(current, "VK Video", () -> searchClient.searchVk(value, 0))));
+                () -> runSource(current, "VK Video",
+                        () -> searchClient.searchVk(value, 0, thumbnailTargetWidth))));
         activeSearches.add(network.submit(
                 () -> runSource(current, "Дзен", () -> searchClient.searchDzen(value, 0))));
     }
