@@ -92,7 +92,7 @@ final class SearchClient {
         connection.setConnectTimeout(TIMEOUT_MS);
         connection.setReadTimeout(TIMEOUT_MS);
         connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty("User-Agent", "0W-Tube/0.5.8 AndroidTV");
+        connection.setRequestProperty("User-Agent", "0W-Tube/0.5.9 AndroidTV");
         try {
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("HTTP " + code);

@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class UpdateManager {
     private static final String LATEST_URL =
             "https://github.com/bolknote/0W-Tube/releases/latest";
-    private static final String USER_AGENT = "0W-Tube/0.5.8 AndroidTV";
+    private static final String USER_AGENT = "0W-Tube/0.5.9 AndroidTV";
     private static final int TIMEOUT_MS = 10_000;
     private static final long MAX_APK_SIZE = 150L * 1024L * 1024L;
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
