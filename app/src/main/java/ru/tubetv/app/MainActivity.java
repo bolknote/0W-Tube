@@ -23,6 +23,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -201,7 +202,7 @@ public final class MainActivity extends Activity {
                 boolean gridHadFocus = grid.hasFocus();
                 String selectedKey = selectedItemKey();
                 items.addAll(found);
-                items.sort(VideoRanker.comparator(currentSearchQuery));
+                Collections.sort(items, VideoRanker.comparator(currentSearchQuery));
                 adapter.notifyDataSetChanged();
                 restoreGridSelection(selectedKey, gridHadFocus, !hadItems && !found.isEmpty());
                 finishSource(source, found.size(), null);
