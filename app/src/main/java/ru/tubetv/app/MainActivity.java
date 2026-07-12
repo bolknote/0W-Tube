@@ -2,11 +2,15 @@ package ru.tubetv.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
+import android.os.Build;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -22,6 +26,9 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import androidx.core.content.FileProvider;
+
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -35,6 +42,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public final class MainActivity extends Activity {
+    private static final int REQUEST_INSTALL_SOURCE = 4307;
     private final SearchClient searchClient = new SearchClient();
     private final ExecutorService network = Executors.newFixedThreadPool(3);
     private final AtomicInteger generation = new AtomicInteger();
@@ -62,6 +70,10 @@ public final class MainActivity extends Activity {
     private String dzenError;
     private String currentSearchQuery = "";
     private int qualityJobs;
+    private UpdateManager.Release pendingUpdate;
+    private File pendingUpdateApk;
+    private boolean activityResumed;
+    private boolean updateDialogVisible;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -69,6 +81,10 @@ public final class MainActivity extends Activity {
         setContentView(createContent());
         showPreviousCrash();
         restoreState();
+        UpdateManager.check(this, release -> runOnUiThread(() -> {
+            pendingUpdate = release;
+            maybeOfferUpdate();
+        }));
     }
 
     private void showPreviousCrash() {
@@ -388,7 +404,104 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        activityResumed = true;
         if (adapter != null) adapter.notifyDataSetChanged();
+        if (grid != null) grid.post(this::maybeOfferUpdate);
+    }
+
+    @Override protected void onPause() {
+        activityResumed = false;
+        super.onPause();
+    }
+
+    private void maybeOfferUpdate() {
+        if (!activityResumed || pendingUpdate == null || updateDialogVisible || isFinishing()) return;
+        UpdateManager.Release release = pendingUpdate;
+        pendingUpdate = null;
+        updateDialogVisible = true;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Доступна версия " + release.version)
+                .setMessage("Скачать и установить обновление 0W-Tube?")
+                .setNegativeButton("Позже", null)
+                .setPositiveButton("Обновить", (ignored, which) -> downloadUpdate(release))
+                .create();
+        dialog.setOnDismissListener(ignored -> updateDialogVisible = false);
+        dialog.show();
+    }
+
+    private void downloadUpdate(UpdateManager.Release release) {
+        AlertDialog progress = new AlertDialog.Builder(this)
+                .setTitle("Обновление 0W-Tube")
+                .setMessage("Скачиваю APK…")
+                .setCancelable(false)
+                .create();
+        progress.show();
+        UpdateManager.download(this, release, new UpdateManager.DownloadCallback() {
+            @Override public void onProgress(int percent) {
+                runOnUiThread(() -> progress.setMessage(percent >= 0
+                        ? "Скачиваю APK: " + percent + "%" : "Скачиваю APK…"));
+            }
+
+            @Override public void onReady(File apk) {
+                runOnUiThread(() -> {
+                    progress.dismiss();
+                    installUpdate(apk);
+                });
+            }
+
+            @Override public void onError(String message) {
+                runOnUiThread(() -> {
+                    progress.dismiss();
+                    showUpdateError(message);
+                });
+            }
+        });
+    }
+
+    private void installUpdate(File apk) {
+        pendingUpdateApk = apk;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                && !getPackageManager().canRequestPackageInstalls()) {
+            try {
+                Intent permission = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getPackageName()));
+                startActivityForResult(permission, REQUEST_INSTALL_SOURCE);
+            } catch (Exception error) {
+                showUpdateError("Не удалось открыть разрешение установки приложений");
+            }
+            return;
+        }
+        launchPackageInstaller(apk);
+    }
+
+    private void launchPackageInstaller(File apk) {
+        try {
+            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", apk);
+            Intent install = new Intent(Intent.ACTION_INSTALL_PACKAGE);
+            install.setDataAndType(uri, "application/vnd.android.package-archive");
+            install.setClipData(ClipData.newRawUri("0W-Tube update", uri));
+            install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(install);
+        } catch (Exception error) {
+            showUpdateError("Не удалось открыть системный установщик: " + safeMessage(error));
+        }
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_INSTALL_SOURCE || pendingUpdateApk == null) return;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O
+                || getPackageManager().canRequestPackageInstalls()) {
+            launchPackageInstaller(pendingUpdateApk);
+        } else {
+            showUpdateError("Разрешение на установку обновления не выдано");
+        }
+    }
+
+    private void showUpdateError(String message) {
+        if (isFinishing()) return;
+        new AlertDialog.Builder(this).setTitle("Не удалось обновить 0W-Tube")
+                .setMessage(message).setPositiveButton("Закрыть", null).show();
     }
 
     private TextView text(String value, int sp, int color) {

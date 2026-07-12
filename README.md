@@ -20,6 +20,7 @@ The application uses a native Android interface, the system on-screen keyboard, 
 - Lightweight thumbnail grid with view recycling and a bounded in-memory image cache.
 - Playback controls displayed over the video.
 - Restoration of the last search, selected quality filter, open video, and playback position.
+- Asynchronous GitHub Release update checks with SHA-256 verification and the Android system installer.
 - Per-video local watch progress after the first minute, displayed on result cards.
 - Fresh signed stream URLs resolved immediately before playback.
 - Crash diagnostics shown on the next application launch.
