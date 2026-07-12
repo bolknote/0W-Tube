@@ -3,7 +3,9 @@ package ru.tubetv.app;
 import android.media.MediaCodecList;
 import android.os.Build;
 
+import androidx.annotation.OptIn;
 import androidx.media3.common.MimeTypes;
+import androidx.media3.common.util.UnstableApi;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -12,6 +14,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
+@OptIn(markerClass = UnstableApi.class)
 final class DeviceCapabilities {
     private static volatile DeviceCapabilities instance;
     private final Set<String> hardwareVideo;
