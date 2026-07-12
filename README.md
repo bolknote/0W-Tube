@@ -4,6 +4,8 @@
 
 The application uses a native Android interface, the system on-screen keyboard, direct network requests, and hardware-only video decoding. It does not embed a WebView, require a VK user token, or run a background service.
 
+<img width="1000" height="580" alt="" src="https://github.com/user-attachments/assets/7f99ef2e-7f15-49ec-9232-1eb565594293" />
+
 ## Features
 
 - Unified, concurrent search across RUTUBE, public VK Video, and Dzen results.
