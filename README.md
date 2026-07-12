@@ -1,12 +1,13 @@
 # 0W-Tube
 
-**0W-Tube** ("Zero-Wait Tube") is a lightweight Android TV video search and playback client for RUTUBE and public VK Video content. It is designed for low-memory TV devices and projectors where the official applications are too heavy or slow.
+**0W-Tube** ("Zero-Wait Tube") is a lightweight Android TV video search and playback client for RUTUBE, public VK Video, and Dzen content. It is designed for low-memory TV devices and projectors where the official applications are too heavy or slow.
 
 The application uses a native Android interface, the system on-screen keyboard, direct network requests, and hardware-only video decoding. It does not embed a WebView, require a VK user token, or run a background service.
 
 ## Features
 
-- Unified search across RUTUBE and public VK Video results.
+- Unified, concurrent search across RUTUBE, public VK Video, and Dzen results.
+- Local title-relevance ranking with known maximum quality as a tie-breaker.
 - Anonymous VK Video web session created automatically; no account or user token is required.
 - Selectable quality filters: any quality, 720+, 1080+, 1440+, and 2160/4K.
 - Validation against the formats actually available for each video.
@@ -58,6 +59,8 @@ The control overlay hides automatically while the video is playing.
 RUTUBE search uses its public video search endpoint. Playback options are resolved immediately before opening a video, and the HLS stream is selected from the returned balancer data.
 
 VK Video search uses the same anonymous web API flow as the public `vkvideo.ru` search page. The application obtains a short-lived anonymous session and never asks for a VK account token. Public playback metadata is resolved separately for each selected video.
+
+Dzen search reads the public server-rendered video search page without an account or WebView. The application keeps only anonymous session cookies, resolves fresh public HLS metadata when needed, and uses the same quality filters as the other sources.
 
 Private, deleted, region-restricted, DRM-protected, age-gated, or account-only videos may not be available. These public web interfaces can change independently of the application and may require future compatibility updates.
 
@@ -125,7 +128,9 @@ app/src/main/java/ru/tubetv/app/
   MainActivity.java          Search UI, filters, results, and state restoration
   SearchClient.java          RUTUBE search client
   VkWebClient.java           Anonymous VK Video search client
-  StreamResolver.java        Fresh RUTUBE and VK Video stream resolution
+  DzenClient.java            Anonymous Dzen search client
+  VideoRanker.java           Fast local title-relevance ranking
+  StreamResolver.java        Fresh RUTUBE, VK Video, and Dzen stream resolution
   PlayerActivity.java        Media3 player and TV remote controls
   WatchProgressStore.java    Per-video local playback progress
   ImageLoader.java           Bounded thumbnail loader and memory cache

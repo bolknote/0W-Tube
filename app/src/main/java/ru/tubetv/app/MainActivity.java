@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public final class MainActivity extends Activity {
     private final SearchClient searchClient = new SearchClient();
-    private final ExecutorService network = Executors.newSingleThreadExecutor();
+    private final ExecutorService network = Executors.newFixedThreadPool(3);
     private final AtomicInteger generation = new AtomicInteger();
     private final List<VideoItem> items = new ArrayList<>();
     private static final String[] FILTER_LABELS = {"Любое", "720+", "1080+", "1440+", "2160 / 4K"};
@@ -43,13 +43,17 @@ public final class MainActivity extends Activity {
     private TextView status;
     private final List<Button> filterButtons = new ArrayList<>();
     private int selectedFilter;
-    private Future<?> activeSearch;
+    private final List<Future<?>> activeSearches = new ArrayList<>();
     private boolean rutubeDone;
     private boolean vkDone;
+    private boolean dzenDone;
     private int rutubeCount;
     private int vkCount;
+    private int dzenCount;
     private String rutubeError;
     private String vkError;
+    private String dzenError;
+    private String currentSearchQuery = "";
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -89,7 +93,7 @@ public final class MainActivity extends Activity {
         query.setSingleLine(true);
         query.setTextColor(Color.WHITE);
         query.setHintTextColor(Color.rgb(160, 166, 178));
-        query.setHint("Найти в RUTUBE и VK Video");
+        query.setHint("Найти в RUTUBE, VK Video и Дзене");
         query.setTextSize(20);
         query.setBackgroundResource(R.drawable.search_field_background);
         query.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
@@ -129,7 +133,7 @@ public final class MainActivity extends Activity {
         }
         root.addView(filters, new LinearLayout.LayoutParams(-1, dp(52)));
 
-        status = text("Введите запрос для поиска в RUTUBE и VK Video.", 15,
+        status = text("Введите запрос для поиска в RUTUBE, VK Video и Дзене.", 15,
                 Color.rgb(169, 176, 190));
         status.setGravity(Gravity.CENTER_VERTICAL);
         root.addView(status, new LinearLayout.LayoutParams(-1, dp(42)));
@@ -156,23 +160,29 @@ public final class MainActivity extends Activity {
         String value = query.getText().toString().trim();
         if (value.length() < 2) return;
         int current = generation.incrementAndGet();
-        if (activeSearch != null) activeSearch.cancel(true);
+        currentSearchQuery = value;
+        for (Future<?> search : activeSearches) search.cancel(true);
+        activeSearches.clear();
         items.clear();
         adapter.notifyDataSetChanged();
         StateStore.saveSearch(this, value, selectedFilter);
         rutubeDone = false;
         vkDone = false;
+        dzenDone = false;
         rutubeCount = 0;
         vkCount = 0;
+        dzenCount = 0;
         rutubeError = null;
         vkError = null;
+        dzenError = null;
         updateSearchStatus();
         int minWidth = FILTER_WIDTHS[selectedFilter];
-        activeSearch = network.submit(() -> {
-            runSource(current, "RUTUBE", () -> searchClient.searchRutube(value, minWidth));
-            if (current != generation.get() || Thread.currentThread().isInterrupted()) return;
-            runSource(current, "VK Video", () -> searchClient.searchVk(value, minWidth));
-        });
+        activeSearches.add(network.submit(
+                () -> runSource(current, "RUTUBE", () -> searchClient.searchRutube(value, minWidth))));
+        activeSearches.add(network.submit(
+                () -> runSource(current, "VK Video", () -> searchClient.searchVk(value, minWidth))));
+        activeSearches.add(network.submit(
+                () -> runSource(current, "Дзен", () -> searchClient.searchDzen(value, minWidth))));
     }
 
     private void selectFilter(int index, boolean rerunSearch) {
@@ -187,13 +197,13 @@ public final class MainActivity extends Activity {
             List<VideoItem> found = call.run();
             runOnUiThread(() -> {
                 if (current != generation.get()) return;
-                boolean selectFirst = items.isEmpty() && !found.isEmpty();
+                boolean hadItems = !items.isEmpty();
+                boolean gridHadFocus = grid.hasFocus();
+                String selectedKey = selectedItemKey();
                 items.addAll(found);
+                items.sort(VideoRanker.comparator(currentSearchQuery));
                 adapter.notifyDataSetChanged();
-                if (selectFirst) {
-                    grid.setSelection(0);
-                    grid.requestFocus();
-                }
+                restoreGridSelection(selectedKey, gridHadFocus, !hadItems && !found.isEmpty());
                 finishSource(source, found.size(), null);
             });
         } catch (Exception e) {
@@ -208,10 +218,14 @@ public final class MainActivity extends Activity {
             rutubeDone = true;
             rutubeCount = count;
             rutubeError = error;
-        } else {
+        } else if ("VK Video".equals(source)) {
             vkDone = true;
             vkCount = count;
             vkError = error;
+        } else {
+            dzenDone = true;
+            dzenCount = count;
+            dzenError = error;
         }
         updateSearchStatus();
     }
@@ -221,13 +235,51 @@ public final class MainActivity extends Activity {
                 : FILTER_LABELS[selectedFilter] + "  •  Найдено: " + items.size();
         status.setText(prefix
                 + "  •  RUTUBE: " + sourceState(rutubeDone, rutubeCount, rutubeError)
-                + "  •  VK Video: " + sourceState(vkDone, vkCount, vkError));
+                + "  •  VK Video: " + sourceState(vkDone, vkCount, vkError)
+                + "  •  Дзен: " + sourceState(dzenDone, dzenCount, dzenError));
     }
 
     private static String sourceState(boolean done, int count, String error) {
         if (!done) return "ищу…";
         if (error != null) return "ошибка — " + error;
         return String.valueOf(count);
+    }
+
+    private String selectedItemKey() {
+        int position = grid.getSelectedItemPosition();
+        if (position < 0 || position >= items.size()) return null;
+        return items.get(position).stableKey();
+    }
+
+    private void restoreGridSelection(String selectedKey, boolean gridHadFocus, boolean selectFirst) {
+        int position = -1;
+        if (selectedKey != null) {
+            for (int i = 0; i < items.size(); i++) {
+                if (selectedKey.equals(items.get(i).stableKey())) {
+                    position = i;
+                    break;
+                }
+            }
+        }
+        if (position < 0 && selectFirst) position = 0;
+        if (position < 0) return;
+        final String restoredKey = selectedKey;
+        final int fallbackPosition = position;
+        grid.setSelection(fallbackPosition);
+        grid.post(() -> {
+            int restoredPosition = fallbackPosition;
+            if (restoredKey != null) {
+                for (int i = 0; i < items.size(); i++) {
+                    if (restoredKey.equals(items.get(i).stableKey())) {
+                        restoredPosition = i;
+                        break;
+                    }
+                }
+            }
+            if (restoredPosition >= items.size()) return;
+            grid.setSelection(restoredPosition);
+            if (gridHadFocus || selectFirst) grid.requestFocus();
+        });
     }
 
     private void play(VideoItem item) {
@@ -296,7 +348,8 @@ public final class MainActivity extends Activity {
         VideoAdapter(Context context) { this.context = context; }
         @Override public int getCount() { return items.size(); }
         @Override public VideoItem getItem(int position) { return items.get(position); }
-        @Override public long getItemId(int position) { return position; }
+        @Override public long getItemId(int position) { return getItem(position).stableKey().hashCode(); }
+        @Override public boolean hasStableIds() { return true; }
 
         @Override public View getView(int position, View recycled, ViewGroup parent) {
             Holder holder;

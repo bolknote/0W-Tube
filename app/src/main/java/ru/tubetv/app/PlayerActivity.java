@@ -173,8 +173,10 @@ public final class PlayerActivity extends Activity {
     private void startPlayer() {
         if (streamUrl == null || player != null) return;
         Map<String, String> headers = new HashMap<>();
-        boolean vk = "VK VIDEO".equals(getIntent().getStringExtra("source"));
-        headers.put("Referer", vk ? "https://vkvideo.ru/" : "https://rutube.ru/");
+        String source = getIntent().getStringExtra("source");
+        boolean vk = "VK VIDEO".equals(source);
+        boolean dzen = "ДЗЕН".equals(source);
+        headers.put("Referer", vk ? "https://vkvideo.ru/" : dzen ? "https://dzen.ru/" : "https://rutube.ru/");
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
                 .setUserAgent(vk
                         ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/150 Safari/537.36"

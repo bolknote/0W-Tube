@@ -48,4 +48,9 @@ final class VideoItem {
         String details = quality.isEmpty() ? subtitle : subtitle + "  •  " + quality;
         return new VideoItem(source, title, details, thumbnail, playUrl, pageUrl, durationMs, width, height);
     }
+
+    String stableKey() {
+        if (pageUrl != null && !pageUrl.isEmpty()) return source + "\n" + pageUrl;
+        return source + "\n" + playUrl;
+    }
 }

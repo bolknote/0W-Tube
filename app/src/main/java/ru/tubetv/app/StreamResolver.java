@@ -24,10 +24,76 @@ final class StreamResolver {
     }
 
     PlaybackInfo inspect(String url) throws Exception {
+        if (url != null && (url.contains("dzen.ru/video/") || url.contains("zen.yandex.ru/video/"))) {
+            return inspectDzen(url);
+        }
         if (url != null && (url.contains("vkvideo.ru/") || url.contains("vk.com/video"))) {
             return inspectVk(url);
         }
         return inspectRutube(url);
+    }
+
+    private PlaybackInfo inspectDzen(String url) throws Exception {
+        String id = findDzenId(url);
+        String cacheKey = "dzen:" + id;
+        PlaybackInfo cached = CACHE.get(cacheKey);
+        if (cached != null && System.currentTimeMillis() - cached.loadedAt < CACHE_MS) return cached;
+
+        String pageUrl = "https://dzen.ru/video/watch/" + id;
+        String page = DzenClient.getPage(pageUrl);
+        int metadata = page.indexOf("\"videoMetaResponse\"");
+        int params = metadata < 0 ? -1 : page.lastIndexOf("var _params", metadata);
+        int objectStart = params < 0 ? -1 : page.indexOf('{', params);
+        if (objectStart < 0) throw new Exception("Дзен не отдал данные ролика");
+        JSONObject root = new JSONObject(jsonObjectAt(page, objectStart));
+        JSONObject ssr = root.optJSONObject("ssrData");
+        JSONObject meta = ssr == null ? null : ssr.optJSONObject("videoMetaResponse");
+        JSONObject video = meta == null ? null : meta.optJSONObject("video");
+        if (video == null) throw new Exception("Дзен не отдал публичный поток");
+
+        String hls = null;
+        String fallback = null;
+        String direct = httpUrl(video.optString("id"));
+        if (isHls(direct)) hls = direct;
+        else if (direct != null) fallback = direct;
+        JSONArray streams = video.optJSONArray("streams");
+        if (streams != null) {
+            for (int i = 0; i < streams.length(); i++) {
+                String candidate = httpUrl(streams.optString(i));
+                if (candidate == null) continue;
+                if (hls == null && isHls(candidate)) hls = candidate;
+                if (fallback == null && candidate.contains("ct=0")) fallback = candidate;
+            }
+        }
+        JSONArray oneVideo = video.optJSONArray("oneVideoStreams");
+        if (oneVideo != null) {
+            for (int i = 0; i < oneVideo.length(); i++) {
+                JSONObject item = oneVideo.optJSONObject(i);
+                String candidate = item == null ? null : httpUrl(item.optString("url"));
+                if (candidate == null) continue;
+                if (hls == null && ("hls".equals(item.optString("type")) || isHls(candidate))) hls = candidate;
+                if (fallback == null && "fullhd".equals(item.optString("type"))) fallback = candidate;
+            }
+        }
+        String stream = hls != null ? hls : fallback;
+        if (stream == null) throw new Exception("Нет совместимого потока Дзен");
+
+        int maxWidth = 0;
+        int maxHeight = 0;
+        if (hls != null) {
+            try {
+                int[] dimensions = findMaxDimensions(get(hls, pageUrl));
+                maxWidth = dimensions[0];
+                maxHeight = dimensions[1];
+            } catch (Exception ignored) { }
+        }
+        if (maxWidth == 0 && fallback != null && fallback.contains("type=5")) {
+            maxWidth = 1920;
+            maxHeight = 1080;
+        }
+        PlaybackInfo result = new PlaybackInfo(stream, maxWidth, maxHeight);
+        CACHE.put(cacheKey, result);
+        return result;
     }
 
     private PlaybackInfo inspectRutube(String url) throws Exception {
@@ -102,6 +168,44 @@ final class StreamResolver {
         PlaybackInfo result = new PlaybackInfo(stream, bestWidth, bestHeight);
         CACHE.put(cacheKey, result);
         return result;
+    }
+
+    private static boolean isHls(String value) {
+        return value != null && (value.contains(".m3u8") || value.contains("ct=8"));
+    }
+
+    private static String jsonObjectAt(String value, int start) throws Exception {
+        int depth = 0;
+        boolean string = false;
+        boolean escaped = false;
+        for (int i = start; i < value.length(); i++) {
+            char current = value.charAt(i);
+            if (string) {
+                if (escaped) escaped = false;
+                else if (current == '\\') escaped = true;
+                else if (current == '"') string = false;
+                continue;
+            }
+            if (current == '"') string = true;
+            else if (current == '{') depth++;
+            else if (current == '}' && --depth == 0) return value.substring(start, i + 1);
+        }
+        throw new Exception("Повреждены данные ролика Дзен");
+    }
+
+    private static String findDzenId(String url) throws Exception {
+        String marker = "/video/watch/";
+        int start = url.indexOf(marker);
+        if (start < 0) throw new Exception("Не найден ID Дзен");
+        start += marker.length();
+        int end = start;
+        while (end < url.length()) {
+            char value = url.charAt(end);
+            if (!Character.isLetterOrDigit(value) && value != '-' && value != '_') break;
+            end++;
+        }
+        if (end == start) throw new Exception("Не найден ID Дзен");
+        return url.substring(start, end);
     }
 
     private static int qualityHeight(String key) {

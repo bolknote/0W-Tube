@@ -47,8 +47,18 @@ final class SearchClient {
         return new VkWebClient().search(query, minWidth);
     }
 
+    List<VideoItem> searchDzen(String query, int minWidth) throws Exception {
+        return new DzenClient().search(query, minWidth);
+    }
+
     static List<VideoItem> filterByQuality(List<VideoItem> candidates, int minWidth) throws Exception {
-        ExecutorService probes = Executors.newFixedThreadPool(4);
+        return filterByQuality(candidates, minWidth, 4);
+    }
+
+    static List<VideoItem> filterByQuality(List<VideoItem> candidates, int minWidth,
+                                           int maxParallelRequests) throws Exception {
+        int workers = Math.max(1, Math.min(maxParallelRequests, candidates.size()));
+        ExecutorService probes = Executors.newFixedThreadPool(workers);
         try {
             List<Future<VideoItem>> futures = new ArrayList<>();
             for (VideoItem item : candidates) {
@@ -76,7 +86,7 @@ final class SearchClient {
         connection.setConnectTimeout(TIMEOUT_MS);
         connection.setReadTimeout(TIMEOUT_MS);
         connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty("User-Agent", "0W-Tube/0.5.3 AndroidTV");
+        connection.setRequestProperty("User-Agent", "0W-Tube/0.5.4 AndroidTV");
         try {
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("HTTP " + code);
