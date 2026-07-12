@@ -24,7 +24,11 @@ import android.widget.TextView;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -34,7 +38,9 @@ public final class MainActivity extends Activity {
     private final SearchClient searchClient = new SearchClient();
     private final ExecutorService network = Executors.newFixedThreadPool(3);
     private final AtomicInteger generation = new AtomicInteger();
+    private final List<VideoItem> allItems = new ArrayList<>();
     private final List<VideoItem> items = new ArrayList<>();
+    private final Set<String> qualityRequested = new HashSet<>();
     private static final String[] FILTER_LABELS = {"Любое", "720+", "1080+", "1440+", "2160 / 4K"};
     private static final int[] FILTER_WIDTHS = {0, 1280, 1920, 2560, 3840};
     private ImageLoader imageLoader;
@@ -55,6 +61,7 @@ public final class MainActivity extends Activity {
     private String vkError;
     private String dzenError;
     private String currentSearchQuery = "";
+    private int qualityJobs;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -94,7 +101,7 @@ public final class MainActivity extends Activity {
         query.setSingleLine(true);
         query.setTextColor(Color.WHITE);
         query.setHintTextColor(Color.rgb(160, 166, 178));
-        query.setHint("Найти в RUTUBE, VK Video и Дзене");
+        query.setHint("Введите запрос для поиска в RUTUBE, VK Video и Дзене");
         query.setTextSize(20);
         query.setBackgroundResource(R.drawable.search_field_background);
         query.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
@@ -104,40 +111,47 @@ public final class MainActivity extends Activity {
             }
             return false;
         });
-        bar.addView(query, new LinearLayout.LayoutParams(0, dp(56), 1f));
+        bar.addView(query, new LinearLayout.LayoutParams(0, dp(40), 1f));
+
+        LinearLayout searchColumn = new LinearLayout(this);
+        searchColumn.setOrientation(LinearLayout.VERTICAL);
+        searchColumn.setGravity(Gravity.CENTER);
 
         Button search = new Button(this);
         search.setText("Найти");
+        search.setTextColor(Color.WHITE);
+        search.setBackgroundResource(R.drawable.search_button_background);
         search.setOnClickListener(v -> search());
-        bar.addView(search, new LinearLayout.LayoutParams(dp(120), dp(56)));
+        searchColumn.addView(search, new LinearLayout.LayoutParams(-1, dp(40)));
+
+        status = text("", 11, Color.rgb(169, 176, 190));
+        status.setGravity(Gravity.CENTER);
+        status.setVisibility(View.INVISIBLE);
+        searchColumn.addView(status, new LinearLayout.LayoutParams(-1, dp(18)));
+        bar.addView(searchColumn, new LinearLayout.LayoutParams(dp(120), dp(60)));
 
         root.addView(bar, new LinearLayout.LayoutParams(-1, dp(64)));
 
         LinearLayout filters = new LinearLayout(this);
         filters.setOrientation(LinearLayout.HORIZONTAL);
         filters.setGravity(Gravity.CENTER_VERTICAL);
-        filters.setPadding(dp(70), dp(5), 0, dp(5));
+        filters.setPadding(dp(70), dp(4), 0, dp(4));
         for (int i = 0; i < FILTER_LABELS.length; i++) {
             final int index = i;
             Button chip = new Button(this);
             chip.setText(FILTER_LABELS[i]);
             chip.setTextColor(Color.WHITE);
-            chip.setTextSize(15);
+            chip.setTextSize(13);
             chip.setAllCaps(false);
-            chip.setPadding(dp(16), 0, dp(16), 0);
+            chip.setPadding(dp(14), 0, dp(14), 0);
             chip.setBackgroundResource(R.drawable.filter_chip_background);
             chip.setOnClickListener(v -> selectFilter(index, true));
-            LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(-2, dp(42));
+            LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(-2, dp(28));
             chipParams.setMargins(0, 0, dp(10), 0);
             filters.addView(chip, chipParams);
             filterButtons.add(chip);
         }
-        root.addView(filters, new LinearLayout.LayoutParams(-1, dp(52)));
-
-        status = text("Введите запрос для поиска в RUTUBE, VK Video и Дзене.", 15,
-                Color.rgb(169, 176, 190));
-        status.setGravity(Gravity.CENTER_VERTICAL);
-        root.addView(status, new LinearLayout.LayoutParams(-1, dp(42)));
+        root.addView(filters, new LinearLayout.LayoutParams(-1, dp(36)));
 
         grid = new GridView(this);
         grid.setNumColumns(4);
@@ -164,7 +178,10 @@ public final class MainActivity extends Activity {
         currentSearchQuery = value;
         for (Future<?> search : activeSearches) search.cancel(true);
         activeSearches.clear();
+        allItems.clear();
         items.clear();
+        qualityRequested.clear();
+        qualityJobs = 0;
         adapter.notifyDataSetChanged();
         StateStore.saveSearch(this, value, selectedFilter);
         rutubeDone = false;
@@ -177,20 +194,22 @@ public final class MainActivity extends Activity {
         vkError = null;
         dzenError = null;
         updateSearchStatus();
-        int minWidth = FILTER_WIDTHS[selectedFilter];
         activeSearches.add(network.submit(
-                () -> runSource(current, "RUTUBE", () -> searchClient.searchRutube(value, minWidth))));
+                () -> runSource(current, "RUTUBE", () -> searchClient.searchRutube(value, 0))));
         activeSearches.add(network.submit(
-                () -> runSource(current, "VK Video", () -> searchClient.searchVk(value, minWidth))));
+                () -> runSource(current, "VK Video", () -> searchClient.searchVk(value, 0))));
         activeSearches.add(network.submit(
-                () -> runSource(current, "Дзен", () -> searchClient.searchDzen(value, minWidth))));
+                () -> runSource(current, "Дзен", () -> searchClient.searchDzen(value, 0))));
     }
 
     private void selectFilter(int index, boolean rerunSearch) {
         selectedFilter = Math.max(0, Math.min(index, FILTER_LABELS.length - 1));
         for (int i = 0; i < filterButtons.size(); i++) filterButtons.get(i).setSelected(i == selectedFilter);
         if (rerunSearch) StateStore.saveSearch(this, query == null ? "" : query.getText().toString(), selectedFilter);
-        if (rerunSearch && query.getText().toString().trim().length() >= 2) search();
+        if (rerunSearch && query.getText().toString().trim().length() >= 2) {
+            refreshDisplayedItems(false);
+            if (selectedFilter > 0) requestMissingQualities(generation.get(), new ArrayList<>(allItems));
+        }
     }
 
     private void runSource(int current, String source, SearchCall call) {
@@ -198,14 +217,10 @@ public final class MainActivity extends Activity {
             List<VideoItem> found = call.run();
             runOnUiThread(() -> {
                 if (current != generation.get()) return;
-                boolean hadItems = !items.isEmpty();
-                boolean gridHadFocus = grid.hasFocus();
-                String selectedKey = selectedItemKey();
-                items.addAll(found);
-                Collections.sort(items, VideoRanker.comparator(currentSearchQuery));
-                adapter.notifyDataSetChanged();
-                restoreGridSelection(selectedKey, gridHadFocus, !hadItems && !found.isEmpty());
+                allItems.addAll(found);
                 finishSource(source, found.size(), null);
+                refreshDisplayedItems(true);
+                requestMissingQualities(current, found);
             });
         } catch (Exception e) {
             runOnUiThread(() -> {
@@ -232,18 +247,56 @@ public final class MainActivity extends Activity {
     }
 
     private void updateSearchStatus() {
-        String prefix = FILTER_WIDTHS[selectedFilter] == 0 ? "Найдено: " + items.size()
-                : FILTER_LABELS[selectedFilter] + "  •  Найдено: " + items.size();
-        status.setText(prefix
-                + "  •  RUTUBE: " + sourceState(rutubeDone, rutubeCount, rutubeError)
-                + "  •  VK Video: " + sourceState(vkDone, vkCount, vkError)
-                + "  •  Дзен: " + sourceState(dzenDone, dzenCount, dzenError));
+        status.setVisibility(View.VISIBLE);
+        boolean working = !rutubeDone || !vkDone || !dzenDone || qualityJobs > 0;
+        status.setText("Найдено: " + items.size() + (working ? "…" : ""));
     }
 
-    private static String sourceState(boolean done, int count, String error) {
-        if (!done) return "ищу…";
-        if (error != null) return "ошибка — " + error;
-        return String.valueOf(count);
+    private void refreshDisplayedItems(boolean selectFirst) {
+        boolean hadItems = !items.isEmpty();
+        boolean gridHadFocus = grid.hasFocus();
+        String selectedKey = selectedItemKey();
+        int minWidth = FILTER_WIDTHS[selectedFilter];
+        items.clear();
+        for (VideoItem item : allItems) {
+            if (minWidth == 0 || item.maxWidth >= minWidth) items.add(item);
+        }
+        Collections.sort(items, VideoRanker.comparator(currentSearchQuery));
+        adapter.notifyDataSetChanged();
+        restoreGridSelection(selectedKey, gridHadFocus, selectFirst && !hadItems && !items.isEmpty());
+        updateSearchStatus();
+    }
+
+    private void requestMissingQualities(int current, List<VideoItem> candidates) {
+        List<VideoItem> regular = new ArrayList<>();
+        List<VideoItem> dzen = new ArrayList<>();
+        for (VideoItem item : candidates) {
+            String key = item.stableKey();
+            if (item.maxWidth != 0 || !qualityRequested.add(key)) continue;
+            ("ДЗЕН".equals(item.source) ? dzen : regular).add(item);
+        }
+        submitQualityJob(current, regular, 4);
+        submitQualityJob(current, dzen, 2);
+    }
+
+    private void submitQualityJob(int current, List<VideoItem> missing, int parallel) {
+        if (missing.isEmpty()) return;
+        qualityJobs++;
+        updateSearchStatus();
+        activeSearches.add(network.submit(() -> {
+            List<VideoItem> inspected = SearchClient.inspectQualities(missing, parallel);
+            runOnUiThread(() -> {
+                if (current != generation.get()) return;
+                Map<String, VideoItem> byKey = new HashMap<>();
+                for (VideoItem item : inspected) byKey.put(item.stableKey(), item);
+                for (int i = 0; i < allItems.size(); i++) {
+                    VideoItem replacement = byKey.get(allItems.get(i).stableKey());
+                    if (replacement != null) allItems.set(i, replacement);
+                }
+                qualityJobs = Math.max(0, qualityJobs - 1);
+                refreshDisplayedItems(false);
+            });
+        }));
     }
 
     private String selectedItemKey() {
@@ -262,7 +315,7 @@ public final class MainActivity extends Activity {
                 }
             }
         }
-        if (position < 0 && selectFirst) position = 0;
+        if (position < 0 && (selectFirst || gridHadFocus) && !items.isEmpty()) position = 0;
         if (position < 0) return;
         final String restoredKey = selectedKey;
         final int fallbackPosition = position;
@@ -371,9 +424,9 @@ public final class MainActivity extends Activity {
                 progress.setVisibility(View.GONE);
                 poster.addView(progress, new FrameLayout.LayoutParams(-1, dp(6), Gravity.BOTTOM));
                 card.addView(poster, new LinearLayout.LayoutParams(-1, dp(126)));
-                TextView source = text("", 12, Color.rgb(154, 134, 255));
+                TextView source = text("", 9, Color.rgb(154, 134, 255));
                 source.setTypeface(Typeface.DEFAULT_BOLD);
-                card.addView(source, new LinearLayout.LayoutParams(-1, dp(25)));
+                card.addView(source, new LinearLayout.LayoutParams(-1, dp(22)));
                 TextView title = text("", 16, Color.WHITE);
                 title.setMaxLines(2);
                 card.addView(title, new LinearLayout.LayoutParams(-1, dp(48)));
@@ -385,7 +438,9 @@ public final class MainActivity extends Activity {
                 recycled = card;
             } else holder = (Holder) recycled.getTag();
             VideoItem item = getItem(position);
-            holder.source.setText(item.source);
+            String quality = item.qualityLabel();
+            if (quality.endsWith("p")) quality = quality.substring(0, quality.length() - 1);
+            holder.source.setText(item.source + (quality.isEmpty() ? "" : " (" + quality + ")"));
             holder.title.setText(item.title);
             holder.subtitle.setText(item.subtitle);
             WatchProgressStore.Progress watched = WatchProgressStore.get(context, item);
@@ -404,7 +459,8 @@ public final class MainActivity extends Activity {
     private static final class Holder {
         final ImageView image; final ProgressBar progress;
         final TextView source; final TextView title; final TextView subtitle;
-        Holder(ImageView image, ProgressBar progress, TextView source, TextView title, TextView subtitle) {
+        Holder(ImageView image, ProgressBar progress,
+               TextView source, TextView title, TextView subtitle) {
             this.image = image; this.progress = progress;
             this.source = source; this.title = title; this.subtitle = subtitle;
         }

@@ -8,8 +8,10 @@ The application uses a native Android interface, the system on-screen keyboard, 
 
 - Unified, concurrent search across RUTUBE, public VK Video, and Dzen results.
 - Local title-relevance ranking with known maximum quality as a tie-breaker.
+- Maximum-quality badges are filled in on video cards without blocking the UI.
 - Anonymous VK Video web session created automatically; no account or user token is required.
 - Selectable quality filters: any quality, 720+, 1080+, 1440+, and 2160/4K.
+- Search results and resolved qualities are cached in memory, so changing a quality filter does not repeat backend searches.
 - Validation against the formats actually available for each video.
 - Highest useful hardware-supported stream selected for playback, up to 3840×2160.
 - HLS playback through AndroidX Media3/ExoPlayer.

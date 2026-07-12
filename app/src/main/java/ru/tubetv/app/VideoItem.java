@@ -43,10 +43,15 @@ final class VideoItem {
     }
 
     VideoItem withQuality(int width, int height) {
-        String quality = width >= 3840 ? "4K" : width >= 2560 ? "1440p"
-                : width >= 1920 ? "1080p" : width >= 1280 ? "720p" : width > 0 ? width + "px" : "";
-        String details = quality.isEmpty() ? subtitle : subtitle + "  •  " + quality;
-        return new VideoItem(source, title, details, thumbnail, playUrl, pageUrl, durationMs, width, height);
+        return new VideoItem(source, title, subtitle, thumbnail, playUrl, pageUrl, durationMs, width, height);
+    }
+
+    String qualityLabel() { return qualityLabel(maxWidth); }
+
+    private static String qualityLabel(int width) {
+        return width >= 3840 ? "4K" : width >= 2560 ? "1440p"
+                : width >= 1920 ? "1080p" : width >= 1280 ? "720p"
+                : width > 0 ? width + "px" : "";
     }
 
     String stableKey() {

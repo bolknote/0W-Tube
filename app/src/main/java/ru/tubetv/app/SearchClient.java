@@ -57,6 +57,14 @@ final class SearchClient {
 
     static List<VideoItem> filterByQuality(List<VideoItem> candidates, int minWidth,
                                            int maxParallelRequests) throws Exception {
+        List<VideoItem> inspected = inspectQualities(candidates, maxParallelRequests);
+        List<VideoItem> filtered = new ArrayList<>();
+        for (VideoItem item : inspected) if (item.maxWidth >= minWidth) filtered.add(item);
+        return filtered;
+    }
+
+    static List<VideoItem> inspectQualities(List<VideoItem> candidates, int maxParallelRequests) {
+        if (candidates.isEmpty()) return new ArrayList<>();
         int workers = Math.max(1, Math.min(maxParallelRequests, candidates.size()));
         ExecutorService probes = Executors.newFixedThreadPool(workers);
         try {
@@ -64,18 +72,18 @@ final class SearchClient {
             for (VideoItem item : candidates) {
                 futures.add(probes.submit(() -> {
                     PlaybackInfo info = new StreamResolver().inspect(item.playUrl);
-                    return info.maxWidth >= minWidth ? item.withQuality(info.maxWidth, info.maxHeight) : null;
+                    return item.withQuality(info.maxWidth, info.maxHeight);
                 }));
             }
-            List<VideoItem> filtered = new ArrayList<>();
+            List<VideoItem> inspected = new ArrayList<>();
             for (Future<VideoItem> future : futures) {
-                if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+                if (Thread.currentThread().isInterrupted()) break;
                 try {
                     VideoItem item = future.get();
-                    if (item != null) filtered.add(item);
+                    if (item != null) inspected.add(item);
                 } catch (Exception ignored) { }
             }
-            return filtered;
+            return inspected;
         } finally {
             probes.shutdownNow();
         }
@@ -86,7 +94,7 @@ final class SearchClient {
         connection.setConnectTimeout(TIMEOUT_MS);
         connection.setReadTimeout(TIMEOUT_MS);
         connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty("User-Agent", "0W-Tube/0.5.4 AndroidTV");
+        connection.setRequestProperty("User-Agent", "0W-Tube/0.5.5 AndroidTV");
         try {
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("HTTP " + code);
