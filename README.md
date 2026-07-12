@@ -74,7 +74,9 @@ No user account credentials or permanent VK access tokens are stored. Search and
 
 ## Installation
 
-Build the debug APK or use an APK produced from the current source tree:
+Signed APKs are published on the GitHub Releases page for every version tag. Each release also includes a SHA-256 checksum file.
+
+To install a locally produced debug build instead, use:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk
@@ -109,6 +111,12 @@ gradle :app:lintDebug
 ```
 
 The current application version is defined in `app/build.gradle`.
+
+## Tagged releases
+
+Pushing a Git tag triggers `.github/workflows/release.yml`. The workflow verifies that the tag matches `versionName`, runs Android lint, builds a minified APK with the persistent release signing key, uploads a workflow artifact, and creates a GitHub Release.
+
+The signing key and passwords are supplied through the `RELEASE_KEYSTORE_BASE64`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, and `RELEASE_KEY_PASSWORD` repository secrets. Never commit a release keystore or its passwords.
 
 ## Project structure
 

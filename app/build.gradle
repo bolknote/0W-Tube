@@ -19,8 +19,19 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
+    signingConfigs {
+        release {
+            def keystorePath = System.getenv('RELEASE_KEYSTORE_PATH')
+            storeFile keystorePath ? file(keystorePath) : null
+            storePassword System.getenv('RELEASE_STORE_PASSWORD')
+            keyAlias System.getenv('RELEASE_KEY_ALIAS')
+            keyPassword System.getenv('RELEASE_KEY_PASSWORD')
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
