@@ -33,6 +33,9 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 
 import java.util.ArrayList;
+import java.net.CookieHandler;
+import java.net.CookieManager;
+import java.net.CookiePolicy;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -176,9 +179,13 @@ public final class PlayerActivity extends Activity {
         String source = getIntent().getStringExtra("source");
         boolean vk = "VK VIDEO".equals(source);
         boolean dzen = "ДЗЕН".equals(source);
-        headers.put("Referer", vk ? "https://vkvideo.ru/" : dzen ? "https://dzen.ru/" : "https://rutube.ru/");
+        if (dzen) {
+            CookieHandler.setDefault(new CookieManager(null, CookiePolicy.ACCEPT_ALL));
+        } else {
+            headers.put("Referer", vk ? "https://vkvideo.ru/" : "https://rutube.ru/");
+        }
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
-                .setUserAgent(vk
+                .setUserAgent(dzen ? DzenClient.USER_AGENT : vk
                         ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/150 Safari/537.36"
                         : "Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36")
                 .setConnectTimeoutMs(8_000)

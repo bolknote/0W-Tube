@@ -20,12 +20,16 @@ final class StreamResolver {
     private static final ConcurrentHashMap<String, PlaybackInfo> CACHE = new ConcurrentHashMap<>();
 
     String resolve(String resolverUrl) throws Exception {
+        if (resolverUrl != null && (resolverUrl.contains("dzen.ru/video/")
+                || resolverUrl.contains("zen.yandex.ru/video/"))) {
+            return inspectDzen(resolverUrl, true).streamUrl;
+        }
         return inspect(resolverUrl).streamUrl;
     }
 
     PlaybackInfo inspect(String url) throws Exception {
         if (url != null && (url.contains("dzen.ru/video/") || url.contains("zen.yandex.ru/video/"))) {
-            return inspectDzen(url);
+            return inspectDzen(url, false);
         }
         if (url != null && (url.contains("vkvideo.ru/") || url.contains("vk.com/video"))) {
             return inspectVk(url);
@@ -33,11 +37,13 @@ final class StreamResolver {
         return inspectRutube(url);
     }
 
-    private PlaybackInfo inspectDzen(String url) throws Exception {
+    private PlaybackInfo inspectDzen(String url, boolean forPlayback) throws Exception {
         String id = findDzenId(url);
         String cacheKey = "dzen:" + id;
-        PlaybackInfo cached = CACHE.get(cacheKey);
-        if (cached != null && System.currentTimeMillis() - cached.loadedAt < CACHE_MS) return cached;
+        if (!forPlayback) {
+            PlaybackInfo cached = CACHE.get(cacheKey);
+            if (cached != null && System.currentTimeMillis() - cached.loadedAt < CACHE_MS) return cached;
+        }
 
         String pageUrl = "https://dzen.ru/video/watch/" + id;
         String page = DzenClient.getPage(pageUrl);
@@ -80,9 +86,9 @@ final class StreamResolver {
 
         int maxWidth = 0;
         int maxHeight = 0;
-        if (hls != null) {
+        if (!forPlayback && hls != null) {
             try {
-                int[] dimensions = findMaxDimensions(get(hls, pageUrl));
+                int[] dimensions = findMaxDimensions(get(hls, null, DzenClient.USER_AGENT));
                 maxWidth = dimensions[0];
                 maxHeight = dimensions[1];
             } catch (Exception ignored) { }
@@ -92,7 +98,7 @@ final class StreamResolver {
             maxHeight = 1080;
         }
         PlaybackInfo result = new PlaybackInfo(stream, maxWidth, maxHeight);
-        CACHE.put(cacheKey, result);
+        if (!forPlayback) CACHE.put(cacheKey, result);
         return result;
     }
 
@@ -285,12 +291,17 @@ final class StreamResolver {
     }
 
     private static String get(String address, String referer) throws Exception {
+        return get(address, referer,
+                "Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36");
+    }
+
+    private static String get(String address, String referer, String userAgent) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
         connection.setConnectTimeout(8000);
         connection.setReadTimeout(8000);
         connection.setRequestProperty("Accept", "application/json,text/html,*/*");
-        connection.setRequestProperty("Referer", referer);
-        connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36");
+        if (referer != null && !referer.isEmpty()) connection.setRequestProperty("Referer", referer);
+        connection.setRequestProperty("User-Agent", userAgent);
         try {
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("HTTP " + code);

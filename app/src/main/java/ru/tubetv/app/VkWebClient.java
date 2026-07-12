@@ -16,7 +16,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 
 final class VkWebClient {
@@ -43,7 +42,6 @@ final class VkWebClient {
         JSONObject response = root.optJSONObject("response");
         if (response == null) throw new Exception("VK Video не отдал результаты");
 
-        Map<String, String> authors = authors(response);
         LinkedHashMap<String, JSONObject> videos = new LinkedHashMap<>();
         JSONArray catalogVideos = response.optJSONArray("catalog_videos");
         if (catalogVideos != null) {
@@ -66,11 +64,8 @@ final class VkWebClient {
             long owner = video.optLong("owner_id");
             long videoId = video.optLong("id");
             String page = "https://vkvideo.ru/video" + owner + "_" + videoId;
-            String author = authors.get(String.valueOf(owner));
-            String subtitle = (author == null || author.isEmpty() ? "VK Video" : author)
-                    + "  •  " + formatDuration(video.optInt("duration"));
             result.add(new VideoItem("VK VIDEO", video.optString("title", "Видео VK"),
-                    subtitle, bestImage(video.optJSONArray("image")), page, page,
+                    "", bestImage(video.optJSONArray("image")), page, page,
                     video.optLong("duration") * 1000L));
             if (result.size() >= LIMIT) break;
         }
@@ -88,27 +83,6 @@ final class VkWebClient {
         tokenExpiresAt = data == null ? 0 : data.optLong("expired_at");
         if (anonymousToken == null || anonymousToken.isEmpty()) throw new Exception("VK Video не выдал анонимную сессию");
         return anonymousToken;
-    }
-
-    private static Map<String, String> authors(JSONObject response) {
-        Map<String, String> result = new LinkedHashMap<>();
-        JSONArray groups = response.optJSONArray("groups");
-        if (groups != null) {
-            for (int i = 0; i < groups.length(); i++) {
-                JSONObject group = groups.optJSONObject(i);
-                if (group != null) result.put("-" + group.optLong("id"), group.optString("name"));
-            }
-        }
-        JSONArray profiles = response.optJSONArray("profiles");
-        if (profiles != null) {
-            for (int i = 0; i < profiles.length(); i++) {
-                JSONObject profile = profiles.optJSONObject(i);
-                if (profile == null) continue;
-                String name = (profile.optString("first_name") + " " + profile.optString("last_name")).trim();
-                result.put(String.valueOf(profile.optLong("id")), name);
-            }
-        }
-        return result;
     }
 
     private static void collectOrderedIds(JSONArray sections, Set<String> result) {
@@ -198,12 +172,4 @@ final class VkWebClient {
         return output.toString(StandardCharsets.UTF_8.name());
     }
 
-    private static String formatDuration(int seconds) {
-        if (seconds <= 0) return "";
-        int hours = seconds / 3600;
-        int minutes = seconds % 3600 / 60;
-        int rest = seconds % 60;
-        return hours > 0 ? String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, rest)
-                : String.format(Locale.ROOT, "%d:%02d", minutes, rest);
-    }
 }

@@ -113,24 +113,20 @@ public final class MainActivity extends Activity {
         });
         bar.addView(query, new LinearLayout.LayoutParams(0, dp(40), 1f));
 
-        LinearLayout searchColumn = new LinearLayout(this);
-        searchColumn.setOrientation(LinearLayout.VERTICAL);
-        searchColumn.setGravity(Gravity.CENTER);
-
         Button search = new Button(this);
         search.setText("Найти");
         search.setTextColor(Color.WHITE);
         search.setBackgroundResource(R.drawable.search_button_background);
         search.setOnClickListener(v -> search());
-        searchColumn.addView(search, new LinearLayout.LayoutParams(-1, dp(40)));
-
-        status = text("", 11, Color.rgb(169, 176, 190));
-        status.setGravity(Gravity.CENTER);
-        status.setVisibility(View.INVISIBLE);
-        searchColumn.addView(status, new LinearLayout.LayoutParams(-1, dp(18)));
-        bar.addView(searchColumn, new LinearLayout.LayoutParams(dp(120), dp(60)));
+        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(dp(90), dp(40));
+        searchParams.setMargins(dp(8), 0, 0, 0);
+        bar.addView(search, searchParams);
 
         root.addView(bar, new LinearLayout.LayoutParams(-1, dp(64)));
+
+        LinearLayout filterBar = new LinearLayout(this);
+        filterBar.setOrientation(LinearLayout.HORIZONTAL);
+        filterBar.setGravity(Gravity.CENTER_VERTICAL);
 
         LinearLayout filters = new LinearLayout(this);
         filters.setOrientation(LinearLayout.HORIZONTAL);
@@ -151,7 +147,15 @@ public final class MainActivity extends Activity {
             filters.addView(chip, chipParams);
             filterButtons.add(chip);
         }
-        root.addView(filters, new LinearLayout.LayoutParams(-1, dp(36)));
+        filterBar.addView(filters, new LinearLayout.LayoutParams(0, dp(36), 1f));
+
+        status = text("", 11, Color.rgb(169, 176, 190));
+        status.setGravity(Gravity.CENTER);
+        status.setVisibility(View.INVISIBLE);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(dp(90), dp(36));
+        statusParams.setMargins(dp(8), 0, 0, 0);
+        filterBar.addView(status, statusParams);
+        root.addView(filterBar, new LinearLayout.LayoutParams(-1, dp(36)));
 
         grid = new GridView(this);
         grid.setNumColumns(4);
@@ -423,6 +427,14 @@ public final class MainActivity extends Activity {
                 progress.setProgressDrawable(getDrawable(R.drawable.card_progress));
                 progress.setVisibility(View.GONE);
                 poster.addView(progress, new FrameLayout.LayoutParams(-1, dp(6), Gravity.BOTTOM));
+                TextView duration = text("", 9, Color.WHITE);
+                duration.setGravity(Gravity.CENTER);
+                duration.setBackgroundResource(R.drawable.duration_badge_background);
+                duration.setVisibility(View.GONE);
+                FrameLayout.LayoutParams durationParams = new FrameLayout.LayoutParams(-2, dp(18),
+                        Gravity.BOTTOM | Gravity.END);
+                durationParams.setMargins(dp(6), dp(6), dp(6), dp(8));
+                poster.addView(duration, durationParams);
                 card.addView(poster, new LinearLayout.LayoutParams(-1, dp(126)));
                 TextView source = text("", 9, Color.rgb(154, 134, 255));
                 source.setTypeface(Typeface.DEFAULT_BOLD);
@@ -430,10 +442,7 @@ public final class MainActivity extends Activity {
                 TextView title = text("", 16, Color.WHITE);
                 title.setMaxLines(2);
                 card.addView(title, new LinearLayout.LayoutParams(-1, dp(48)));
-                TextView subtitle = text("", 12, Color.rgb(169, 176, 190));
-                subtitle.setSingleLine(true);
-                card.addView(subtitle, new LinearLayout.LayoutParams(-1, dp(24)));
-                holder = new Holder(image, progress, source, title, subtitle);
+                holder = new Holder(image, progress, duration, source, title);
                 card.setTag(holder);
                 recycled = card;
             } else holder = (Holder) recycled.getTag();
@@ -442,7 +451,9 @@ public final class MainActivity extends Activity {
             if (quality.endsWith("p")) quality = quality.substring(0, quality.length() - 1);
             holder.source.setText(item.source + (quality.isEmpty() ? "" : " (" + quality + ")"));
             holder.title.setText(item.title);
-            holder.subtitle.setText(item.subtitle);
+            String durationLabel = formatDuration(item.durationMs);
+            holder.duration.setText(durationLabel);
+            holder.duration.setVisibility(durationLabel.isEmpty() ? View.GONE : View.VISIBLE);
             WatchProgressStore.Progress watched = WatchProgressStore.get(context, item);
             long duration = watched.durationMs > 0 ? watched.durationMs : item.durationMs;
             if (watched.positionMs >= WatchProgressStore.MIN_POSITION_MS && duration > 0) {
@@ -458,11 +469,21 @@ public final class MainActivity extends Activity {
 
     private static final class Holder {
         final ImageView image; final ProgressBar progress;
-        final TextView source; final TextView title; final TextView subtitle;
-        Holder(ImageView image, ProgressBar progress,
-               TextView source, TextView title, TextView subtitle) {
-            this.image = image; this.progress = progress;
-            this.source = source; this.title = title; this.subtitle = subtitle;
+        final TextView duration; final TextView source; final TextView title;
+        Holder(ImageView image, ProgressBar progress, TextView duration,
+               TextView source, TextView title) {
+            this.image = image; this.progress = progress; this.duration = duration;
+            this.source = source; this.title = title;
         }
+    }
+
+    private static String formatDuration(long durationMs) {
+        long seconds = durationMs / 1000L;
+        if (seconds <= 0) return "";
+        long hours = seconds / 3600L;
+        long minutes = seconds % 3600L / 60L;
+        long rest = seconds % 60L;
+        return hours > 0 ? String.format(java.util.Locale.ROOT, "%d:%02d:%02d", hours, minutes, rest)
+                : String.format(java.util.Locale.ROOT, "%d:%02d", minutes, rest);
     }
 }

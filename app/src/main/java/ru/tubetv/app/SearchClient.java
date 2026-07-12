@@ -12,7 +12,6 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -33,10 +32,9 @@ final class SearchClient {
             String id = item.optString("id");
             String page = item.optString("video_url", "https://rutube.ru/video/" + id + "/");
             String embed = item.optString("embed_url", "https://rutube.ru/play/embed/" + id);
-            String author = item.optString("feed_name");
             int duration = item.optInt("duration");
             result.add(new VideoItem("RUTUBE", item.optString("title", "Без названия"),
-                    author + "  •  " + formatDuration(duration), item.optString("thumbnail_url"),
+                    "", item.optString("thumbnail_url"),
                     embed, page, duration * 1000L));
         }
         if (minWidth <= 0 || result.isEmpty()) return result;
@@ -94,7 +92,7 @@ final class SearchClient {
         connection.setConnectTimeout(TIMEOUT_MS);
         connection.setReadTimeout(TIMEOUT_MS);
         connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty("User-Agent", "0W-Tube/0.5.5 AndroidTV");
+        connection.setRequestProperty("User-Agent", "0W-Tube/0.5.6 AndroidTV");
         try {
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("HTTP " + code);
@@ -107,15 +105,6 @@ final class SearchClient {
         } finally {
             connection.disconnect();
         }
-    }
-
-    private static String formatDuration(int seconds) {
-        if (seconds <= 0) return "";
-        int hours = seconds / 3600;
-        int minutes = (seconds % 3600) / 60;
-        int rest = seconds % 60;
-        return hours > 0 ? String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, rest)
-                : String.format(Locale.ROOT, "%d:%02d", minutes, rest);
     }
 
 }

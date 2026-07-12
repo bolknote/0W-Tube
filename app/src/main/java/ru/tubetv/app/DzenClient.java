@@ -17,8 +17,8 @@ import java.util.Set;
 final class DzenClient {
     private static final int LIMIT = 12;
     private static final int TIMEOUT_MS = 9_000;
-    private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            + "AppleWebKit/537.36 Chrome/150.0.0.0 Safari/537.36";
+    static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
     private static final Map<String, String> COOKIES = new LinkedHashMap<>();
 
     List<VideoItem> search(String query, int minWidth) throws Exception {
@@ -90,14 +90,11 @@ final class DzenClient {
             String title = textAfter(card, "data-testid=\"card-part-title\">");
             if (title.isEmpty()) title = attributeNear(card, "floor-card-video-wrapper-link", "aria-label");
             if (title.isEmpty()) title = "Видео Дзен";
-            String author = attributeNear(card, "titleWithMeta", "title");
             String durationText = textAfter(card, "aria-label=\"Общая длительность видео\">");
             long durationMs = parseDuration(durationText) * 1000L;
             String thumbnail = between(card, "background-image:url(", ")");
             String page = marker + id;
-            String subtitle = (author.isEmpty() ? "Дзен" : author)
-                    + (durationText.isEmpty() ? "" : "  •  " + durationText);
-            result.add(new VideoItem("ДЗЕН", decode(title), decode(subtitle),
+            result.add(new VideoItem("ДЗЕН", decode(title), "",
                     decode(thumbnail), page, page, durationMs));
         }
         return result;
