@@ -26,6 +26,10 @@ import android.widget.TextView;
 
 import androidx.annotation.OptIn;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.C;
@@ -85,10 +89,14 @@ public final class PlayerActivity extends Activity {
     private long lastSavedAt;
     private int videoWidth;
     private int videoHeight;
+    private int safeLeft;
+    private int safeRight;
+    private int safeBottom;
     private Thread.UncaughtExceptionHandler previousCrashHandler;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         previousCrashHandler = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
             CrashLog.save(getApplicationContext(), error);
@@ -199,6 +207,16 @@ public final class PlayerActivity extends Activity {
         controlsLayoutParams = new FrameLayout.LayoutParams(-1, dp(122), Gravity.BOTTOM);
         applyControlsLayout();
         root.addView(controls, controlsLayoutParams);
+        ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
+            Insets safe = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars()
+                    | WindowInsetsCompat.Type.displayCutout());
+            safeLeft = safe.left;
+            safeRight = safe.right;
+            safeBottom = safe.bottom;
+            applyControlsLayout();
+            return windowInsets;
+        });
+        ViewCompat.requestApplyInsets(root);
         return root;
     }
 
@@ -432,7 +450,8 @@ public final class PlayerActivity extends Activity {
         if (controlsLayoutParams == null) return;
         int horizontal = isCompactPlayer() ? 10 : 28;
         int bottom = isCompactPlayer() ? 10 : 24;
-        controlsLayoutParams.setMargins(dp(horizontal), 0, dp(horizontal), dp(bottom));
+        controlsLayoutParams.setMargins(dp(horizontal) + safeLeft, 0,
+                dp(horizontal) + safeRight, dp(bottom) + safeBottom);
         if (controls != null) controls.setLayoutParams(controlsLayoutParams);
     }
 

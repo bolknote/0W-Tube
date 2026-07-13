@@ -30,6 +30,10 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import androidx.core.content.FileProvider;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -67,6 +71,8 @@ public final class MainActivity extends Activity {
     private int selectedFilter;
     private boolean trafficMode;
     private int thumbnailTargetWidth;
+    private int gridColumns;
+    private int gridSpacingDp;
     private final List<Future<?>> activeSearches = new ArrayList<>();
     private boolean rutubeDone;
     private boolean vkDone;
@@ -86,6 +92,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         imageLoader = new ImageLoader();
         setContentView(createContent());
         showPreviousCrash();
@@ -114,6 +121,18 @@ public final class MainActivity extends Activity {
         root.setPadding(dp(compact ? 12 : 36), dp(compact ? 12 : 24),
                 dp(compact ? 12 : 36), dp(compact ? 12 : 20));
         root.setBackgroundColor(Color.rgb(16, 18, 24));
+        final int baseLeft = dp(compact ? 12 : 36);
+        final int baseTop = dp(compact ? 12 : 24);
+        final int baseRight = dp(compact ? 12 : 36);
+        final int baseBottom = dp(compact ? 12 : 20);
+        ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
+            Insets safe = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars()
+                    | WindowInsetsCompat.Type.displayCutout());
+            view.setPadding(baseLeft + safe.left, baseTop + safe.top,
+                    baseRight + safe.right, baseBottom + safe.bottom);
+            updateThumbnailTarget(view.getWidth(), view.getPaddingLeft(), view.getPaddingRight());
+            return windowInsets;
+        });
 
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
@@ -211,9 +230,10 @@ public final class MainActivity extends Activity {
         }
 
         grid = new GridView(this);
-        int columns = gridColumnCount();
-        grid.setNumColumns(columns);
-        grid.setHorizontalSpacing(dp(compact ? 8 : 14));
+        gridColumns = gridColumnCount();
+        gridSpacingDp = compact ? 8 : 14;
+        grid.setNumColumns(gridColumns);
+        grid.setHorizontalSpacing(dp(gridSpacingDp));
         grid.setVerticalSpacing(dp(compact ? 8 : 14));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
         grid.setClipToPadding(false);
@@ -226,11 +246,18 @@ public final class MainActivity extends Activity {
         grid.setAdapter(adapter);
         grid.setOnItemClickListener((parent, view, position, id) -> play(items.get(position)));
         root.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1f));
-        int contentWidth = getResources().getDisplayMetrics().widthPixels
-                - dp(compact ? 24 : 72) - dp(compact ? 8 : 14) * (columns - 1);
-        int columnWidth = contentWidth / columns;
-        thumbnailTargetWidth = Math.max(1, columnWidth - dp(14));
+        updateThumbnailTarget(getResources().getDisplayMetrics().widthPixels,
+                baseLeft, baseRight);
+        ViewCompat.requestApplyInsets(root);
         return root;
+    }
+
+    private void updateThumbnailTarget(int totalWidth, int leftPadding, int rightPadding) {
+        if (totalWidth <= 0 || gridColumns <= 0) return;
+        int contentWidth = totalWidth - leftPadding - rightPadding
+                - dp(gridSpacingDp) * (gridColumns - 1);
+        int columnWidth = Math.max(1, contentWidth / gridColumns);
+        thumbnailTargetWidth = Math.max(1, columnWidth - dp(14));
     }
 
     private void search() {
@@ -471,7 +498,7 @@ public final class MainActivity extends Activity {
                 return;
             }
         }
-        if (lastQuery.trim().length() >= 2) search(); else query.requestFocus();
+        if (lastQuery.trim().length() >= 2) grid.post(this::search); else query.requestFocus();
     }
 
     @Override protected void onDestroy() {
