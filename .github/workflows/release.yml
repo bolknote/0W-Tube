@@ -35,10 +35,10 @@ jobs:
           test -n "$app_version"
           test "$app_version" = "$GITHUB_REF_NAME"
 
-      - name: Install maximum ZIP compressor
+      - name: Install APK packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends advancecomp
+          sudo apt-get install --yes --no-install-recommends advancecomp zip unzip
           advzip --version
 
       - name: Restore release signing key
@@ -79,6 +79,15 @@ jobs:
 
           cp "$unsigned" "$optimized"
           advzip -z -4 "$optimized"
+
+          # Android 11+ rejects APKs whose resource table is compressed.
+          stored_resources="$RUNNER_TEMP/stored-resources"
+          mkdir -p "$stored_resources"
+          unzip -o -j "$optimized" resources.arsc -d "$stored_resources"
+          zip -d "$optimized" resources.arsc
+          (cd "$stored_resources" && zip -0 -X "$optimized" resources.arsc)
+          unzip -lv "$optimized" resources.arsc | grep -q 'Stored.*resources.arsc'
+
           "$zipalign" -P 16 -f 4 "$optimized" "$aligned"
           "$apksigner" sign \
             --ks "$RELEASE_KEYSTORE_PATH" \
@@ -90,6 +99,7 @@ jobs:
 
           "$zipalign" -c -P 16 -v 4 "$output"
           "$apksigner" verify --verbose "$output"
+          unzip -lv "$output" resources.arsc | grep -q 'Stored.*resources.arsc'
 
           cd dist
           sha256sum "0W-Tube-${GITHUB_REF_NAME}.apk" > "0W-Tube-${GITHUB_REF_NAME}.apk.sha256"
