@@ -17,4 +17,3 @@ dependencyResolutionManagement {
 rootProject.name = "0W-Tube"
 include(":app")
 include(":codecprobe")
-include(":netprobe")

@@ -35,6 +35,12 @@ jobs:
           test -n "$app_version"
           test "$app_version" = "$GITHUB_REF_NAME"
 
+      - name: Install maximum ZIP compressor
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends advancecomp
+          advzip --version
+
       - name: Restore release signing key
         shell: bash
         env:
@@ -43,19 +49,48 @@ jobs:
           test -n "$RELEASE_KEYSTORE_BASE64"
           printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/0w-tube-release.jks"
 
-      - name: Build signed release and run lint
+      - name: Build unsigned release and run lint
+        run: gradle :app:assembleRelease :app:lintRelease --no-daemon
+
+      - name: Compress, align, and sign release once
+        shell: bash
         env:
           RELEASE_KEYSTORE_PATH: ${{ runner.temp }}/0w-tube-release.jks
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: gradle :app:assembleRelease :app:lintRelease --no-daemon
-
-      - name: Prepare release files
-        shell: bash
         run: |
+          set -euo pipefail
+          unsigned="app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -f "$unsigned"
+
+          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          test -n "$android_sdk"
+          build_tools="$(find "$android_sdk/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          zipalign="$build_tools/zipalign"
+          apksigner="$build_tools/apksigner"
+          test -x "$zipalign"
+          test -x "$apksigner"
+
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/0W-Tube-${GITHUB_REF_NAME}.apk"
+          optimized="$RUNNER_TEMP/0W-Tube-${GITHUB_REF_NAME}-optimized.apk"
+          aligned="$RUNNER_TEMP/0W-Tube-${GITHUB_REF_NAME}-aligned.apk"
+          output="dist/0W-Tube-${GITHUB_REF_NAME}.apk"
+
+          cp "$unsigned" "$optimized"
+          advzip -z -4 "$optimized"
+          "$zipalign" -P 16 -f 4 "$optimized" "$aligned"
+          "$apksigner" sign \
+            --ks "$RELEASE_KEYSTORE_PATH" \
+            --ks-pass env:RELEASE_STORE_PASSWORD \
+            --ks-key-alias "$RELEASE_KEY_ALIAS" \
+            --key-pass env:RELEASE_KEY_PASSWORD \
+            --out "$output" \
+            "$aligned"
+
+          "$zipalign" -c -P 16 -v 4 "$output"
+          "$apksigner" verify --verbose "$output"
+
           cd dist
           sha256sum "0W-Tube-${GITHUB_REF_NAME}.apk" > "0W-Tube-${GITHUB_REF_NAME}.apk.sha256"
 
@@ -66,13 +101,21 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-      - name: Create GitHub release
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME"
-          dist/0W-Tube-${GITHUB_REF_NAME}.apk
-          dist/0W-Tube-${GITHUB_REF_NAME}.apk.sha256
-          --verify-tag
-          --generate-notes
-          --title "0W-Tube ${GITHUB_REF_NAME}"
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
+            "dist/0W-Tube-${GITHUB_REF_NAME}.apk"
+            "dist/0W-Tube-${GITHUB_REF_NAME}.apk.sha256"
+          )
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --verify-tag \
+              --generate-notes \
+              --title "0W-Tube ${GITHUB_REF_NAME}"
+          fi
