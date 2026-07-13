@@ -70,6 +70,7 @@ public final class MainActivity extends Activity {
     private ImageButton trafficButton;
     private int selectedFilter;
     private boolean trafficMode;
+    private boolean searchStarted;
     private int thumbnailTargetWidth;
     private int gridColumns;
     private int gridSpacingDp;
@@ -148,8 +149,12 @@ public final class MainActivity extends Activity {
         query.setTextColor(Color.WHITE);
         query.setHintTextColor(Color.rgb(160, 166, 178));
         query.setHint(compact ? "Найти видео" : "Введите запрос для поиска в RUTUBE, VK Video и Дзене");
-        query.setTextSize(compact ? 17 : 20);
+        query.setTextSize(compact ? 16 : 20);
         query.setBackgroundResource(R.drawable.search_field_background);
+        if (compact) {
+            query.setMinimumHeight(0);
+            query.setPadding(dp(14), 0, dp(14), 0);
+        }
         query.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
         query.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
@@ -157,17 +162,19 @@ public final class MainActivity extends Activity {
             }
             return false;
         });
-        bar.addView(query, new LinearLayout.LayoutParams(0, dp(compact ? 44 : 40), 1f));
+        bar.addView(query, new LinearLayout.LayoutParams(0, dp(compact ? 30 : 40), 1f));
 
-        Button search = new Button(this);
-        search.setText("Найти");
-        search.setTextColor(Color.WHITE);
-        search.setBackgroundResource(R.drawable.search_button_background);
-        search.setOnClickListener(v -> search());
-        search.setTextSize(compact ? 12 : 14);
-        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(dp(compact ? 72 : 90), dp(compact ? 44 : 40));
-        searchParams.setMargins(dp(compact ? 6 : 8), 0, 0, 0);
-        bar.addView(search, searchParams);
+        if (!compact) {
+            Button search = new Button(this);
+            search.setText("Найти");
+            search.setTextColor(Color.WHITE);
+            search.setBackgroundResource(R.drawable.search_button_background);
+            search.setOnClickListener(v -> search());
+            search.setTextSize(14);
+            LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(dp(90), dp(40));
+            searchParams.setMargins(dp(8), 0, 0, 0);
+            bar.addView(search, searchParams);
+        }
 
         root.addView(bar, new LinearLayout.LayoutParams(-1, dp(compact ? 48 : 64)));
 
@@ -263,6 +270,7 @@ public final class MainActivity extends Activity {
     private void search() {
         String value = query.getText().toString().trim();
         if (value.length() < 2) return;
+        searchStarted = true;
         int current = generation.incrementAndGet();
         currentSearchQuery = value;
         for (Future<?> search : activeSearches) search.cancel(true);
@@ -362,6 +370,11 @@ public final class MainActivity extends Activity {
     }
 
     private void updateSearchStatus() {
+        if (!searchStarted) {
+            status.setText("");
+            status.setVisibility(View.INVISIBLE);
+            return;
+        }
         status.setVisibility(View.VISIBLE);
         boolean working = !rutubeDone || !vkDone || !dzenDone || qualityJobs > 0;
         status.setText("Найдено: " + items.size() + (working ? "…" : ""));
