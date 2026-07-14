@@ -117,15 +117,16 @@ public final class MainActivity extends Activity {
 
     private View createContent() {
         boolean compact = isCompactLayout();
+        boolean compactLandscape = compact
+                && getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(compact ? 12 : 36), dp(compact ? 12 : 24),
-                dp(compact ? 12 : 36), dp(compact ? 12 : 20));
-        root.setBackgroundColor(Color.rgb(16, 18, 24));
         final int baseLeft = dp(compact ? 12 : 36);
-        final int baseTop = dp(compact ? 12 : 24);
+        final int baseTop = dp(compactLandscape ? 0 : compact ? 12 : 24);
         final int baseRight = dp(compact ? 12 : 36);
         final int baseBottom = dp(compact ? 12 : 20);
+        root.setPadding(baseLeft, baseTop, baseRight, baseBottom);
+        root.setBackgroundColor(Color.rgb(16, 18, 24));
         ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
             Insets safe = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars()
                     | WindowInsetsCompat.Type.displayCutout());
