@@ -2,6 +2,7 @@ package ru.tubetv.app;
 
 import android.content.Context;
 import android.content.pm.PackageInfo;
+import android.os.SystemClock;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -21,9 +22,12 @@ final class UpdateManager {
             "https://github.com/bolknote/0W-Tube/releases/latest";
     private static final String USER_AGENT = "0W-Tube/0.5.14 AndroidTV";
     private static final int TIMEOUT_MS = 10_000;
+    private static final long CHECK_INTERVAL_MS = 60_000L;
     private static final long MAX_APK_SIZE = 150L * 1024L * 1024L;
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
-    private static final AtomicBoolean CHECK_STARTED = new AtomicBoolean();
+    private static final AtomicBoolean CHECK_RUNNING = new AtomicBoolean();
+    private static volatile Release cachedUpdate;
+    private static volatile long lastCheckStartedAt;
 
     interface CheckCallback { void onUpdate(Release release); }
     interface DownloadCallback {
@@ -49,8 +53,16 @@ final class UpdateManager {
     }
 
     static void check(Context context, CheckCallback callback) {
-        if (!CHECK_STARTED.compareAndSet(false, true)) return;
         Context app = context.getApplicationContext();
+        Release cached = cachedUpdate;
+        if (cached != null) {
+            callback.onUpdate(cached);
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        if (lastCheckStartedAt != 0L && now - lastCheckStartedAt < CHECK_INTERVAL_MS) return;
+        if (!CHECK_RUNNING.compareAndSet(false, true)) return;
+        lastCheckStartedAt = now;
         EXECUTOR.execute(() -> {
             try {
                 HttpURLConnection latest = (HttpURLConnection) new URL(LATEST_URL).openConnection();
@@ -72,9 +84,13 @@ final class UpdateManager {
                 if (version.isEmpty() || compareVersions(version, currentVersion(app)) <= 0) return;
                 String base = "https://github.com/bolknote/0W-Tube/releases/download/" + version
                         + "/0W-Tube-" + version + ".apk";
-                callback.onUpdate(new Release(version, base, null, base + ".sha256", 0L));
+                Release release = new Release(version, base, null, base + ".sha256", 0L);
+                cachedUpdate = release;
+                callback.onUpdate(release);
             } catch (Exception ignored) {
                 // An update check must never delay startup or show a network error.
+            } finally {
+                CHECK_RUNNING.set(false);
             }
         });
     }

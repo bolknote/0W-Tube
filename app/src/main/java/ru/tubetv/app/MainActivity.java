@@ -90,6 +90,7 @@ public final class MainActivity extends Activity {
     private File pendingUpdateApk;
     private boolean activityResumed;
     private boolean updateDialogVisible;
+    private String offeredUpdateVersion;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -98,10 +99,7 @@ public final class MainActivity extends Activity {
         setContentView(createContent());
         showPreviousCrash();
         restoreState();
-        UpdateManager.check(this, release -> runOnUiThread(() -> {
-            pendingUpdate = release;
-            maybeOfferUpdate();
-        }));
+        checkForUpdate();
     }
 
     private void showPreviousCrash() {
@@ -561,7 +559,10 @@ public final class MainActivity extends Activity {
         super.onResume();
         activityResumed = true;
         if (adapter != null) adapter.notifyDataSetChanged();
-        if (grid != null) grid.post(this::maybeOfferUpdate);
+        if (grid != null) grid.post(() -> {
+            checkForUpdate();
+            maybeOfferUpdate();
+        });
     }
 
     @Override protected void onPause() {
@@ -573,6 +574,8 @@ public final class MainActivity extends Activity {
         if (!activityResumed || pendingUpdate == null || updateDialogVisible || isFinishing()) return;
         UpdateManager.Release release = pendingUpdate;
         pendingUpdate = null;
+        if (release.version.equals(offeredUpdateVersion)) return;
+        offeredUpdateVersion = release.version;
         updateDialogVisible = true;
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Доступна версия " + release.version)
@@ -582,6 +585,15 @@ public final class MainActivity extends Activity {
                 .create();
         dialog.setOnDismissListener(ignored -> updateDialogVisible = false);
         dialog.show();
+    }
+
+    private void checkForUpdate() {
+        UpdateManager.check(this, release -> runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()
+                    || release.version.equals(offeredUpdateVersion)) return;
+            pendingUpdate = release;
+            maybeOfferUpdate();
+        }));
     }
 
     private void downloadUpdate(UpdateManager.Release release) {
