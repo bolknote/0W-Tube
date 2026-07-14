@@ -21,6 +21,9 @@ final class ExitDiagnostics {
             context.getSharedPreferences("crash_log", Context.MODE_PRIVATE).edit()
                     .putLong("last_exit_timestamp", exit.getTimestamp()).apply();
             int reason = exit.getReason();
+            // Android routinely uses SIGKILL when reclaiming or replacing an app process.
+            // It is not actionable and should not be presented as a previous-launch error.
+            if (reason == ApplicationExitInfo.REASON_SIGNALED && exit.getStatus() == 9) return null;
             if (reason != ApplicationExitInfo.REASON_CRASH
                     && reason != ApplicationExitInfo.REASON_CRASH_NATIVE
                     && reason != ApplicationExitInfo.REASON_ANR
