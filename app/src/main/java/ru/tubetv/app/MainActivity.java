@@ -94,7 +94,7 @@ public final class MainActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
-        imageLoader = new ImageLoader();
+        imageLoader = ((TubeApplication) getApplication()).imageLoader();
         setContentView(createContent());
         showPreviousCrash();
         restoreState();
@@ -116,6 +116,7 @@ public final class MainActivity extends Activity {
     }
 
     private View createContent() {
+        filterButtons.clear();
         boolean compact = isCompactLayout();
         boolean compactLandscape = compact
                 && getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
@@ -132,7 +133,7 @@ public final class MainActivity extends Activity {
                     | WindowInsetsCompat.Type.displayCutout());
             view.setPadding(baseLeft + safe.left, baseTop + safe.top,
                     baseRight + safe.right, baseBottom + safe.bottom);
-            updateThumbnailTarget(view.getWidth(), view.getPaddingLeft(), view.getPaddingRight());
+            updateThumbnailTarget();
             return windowInsets;
         });
 
@@ -254,17 +255,21 @@ public final class MainActivity extends Activity {
         grid.setAdapter(adapter);
         grid.setOnItemClickListener((parent, view, position, id) -> play(items.get(position)));
         root.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1f));
-        updateThumbnailTarget(getResources().getDisplayMetrics().widthPixels,
-                baseLeft, baseRight);
+        updateThumbnailTarget();
         ViewCompat.requestApplyInsets(root);
         return root;
     }
 
-    private void updateThumbnailTarget(int totalWidth, int leftPadding, int rightPadding) {
-        if (totalWidth <= 0 || gridColumns <= 0) return;
-        int contentWidth = totalWidth - leftPadding - rightPadding
-                - dp(gridSpacingDp) * (gridColumns - 1);
-        int columnWidth = Math.max(1, contentWidth / gridColumns);
+    private void updateThumbnailTarget() {
+        float density = getResources().getDisplayMetrics().density;
+        int landscapeWidth = Math.max(getResources().getDisplayMetrics().widthPixels,
+                getResources().getDisplayMetrics().heightPixels);
+        int landscapeColumns = landscapeWidth / density < 900 ? 3 : 4;
+        boolean compactLandscape = isCompactLandscapeDevice();
+        int horizontalPadding = dp(compactLandscape ? 24 : 72);
+        int spacing = dp(compactLandscape ? 8 : 14) * (landscapeColumns - 1);
+        int columnWidth = Math.max(1,
+                (landscapeWidth - horizontalPadding - spacing) / landscapeColumns);
         thumbnailTargetWidth = Math.max(1, columnWidth - dp(14));
     }
 
@@ -515,10 +520,40 @@ public final class MainActivity extends Activity {
         if (lastQuery.trim().length() >= 2) grid.post(this::search); else query.requestFocus();
     }
 
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        String queryText = query == null ? currentSearchQuery : query.getText().toString();
+        int querySelection = query == null ? queryText.length() : query.getSelectionStart();
+        boolean queryHadFocus = query != null && query.hasFocus();
+        boolean gridHadFocus = grid != null && grid.hasFocus();
+        String selectedKey = grid == null ? null : selectedItemKey();
+        int firstVisible = grid == null ? 0 : grid.getFirstVisiblePosition();
+        View firstChild = grid == null ? null : grid.getChildAt(0);
+        int firstTop = firstChild == null ? 0 : firstChild.getTop();
+
+        super.onConfigurationChanged(configuration);
+        setContentView(createContent());
+        query.setText(queryText);
+        query.setSelection(Math.max(0, Math.min(querySelection, queryText.length())));
+        applyFilterMode();
+        adapter.notifyDataSetChanged();
+        updateSearchStatus();
+
+        final int visiblePosition = Math.max(0, Math.min(firstVisible,
+                Math.max(0, items.size() - 1)));
+        grid.setSelectionFromTop(visiblePosition, firstTop);
+        grid.post(() -> {
+            grid.setSelectionFromTop(visiblePosition, firstTop);
+            if (gridHadFocus) {
+                restoreGridSelection(selectedKey, true, false);
+            } else if (queryHadFocus) {
+                query.requestFocus();
+            }
+        });
+    }
+
     @Override protected void onDestroy() {
         generation.incrementAndGet();
         network.shutdownNow();
-        imageLoader.close();
         super.onDestroy();
     }
 
@@ -632,10 +667,21 @@ public final class MainActivity extends Activity {
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private boolean isCompactLayout() {
-        float widthDp = getResources().getDisplayMetrics().widthPixels
-                / getResources().getDisplayMetrics().density;
-        return getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT
-                || widthDp < 720;
+        Configuration configuration = getResources().getConfiguration();
+        if (configuration.orientation == Configuration.ORIENTATION_PORTRAIT) return true;
+
+        return isCompactLandscapeDevice();
+    }
+
+    private boolean isCompactLandscapeDevice() {
+        Configuration configuration = getResources().getConfiguration();
+        int smallestWidthDp = configuration.smallestScreenWidthDp;
+        if (smallestWidthDp > 0) return smallestWidthDp < 720;
+
+        float density = getResources().getDisplayMetrics().density;
+        int shortestSide = Math.min(getResources().getDisplayMetrics().widthPixels,
+                getResources().getDisplayMetrics().heightPixels);
+        return shortestSide / density < 720;
     }
 
     private int gridColumnCount() {

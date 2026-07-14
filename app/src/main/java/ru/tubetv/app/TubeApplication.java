@@ -7,6 +7,8 @@ import java.net.CookieManager;
 import java.net.CookiePolicy;
 
 public final class TubeApplication extends Application {
+    private final ImageLoader imageLoader = new ImageLoader();
+
     @Override public void onCreate() {
         super.onCreate();
         if (CookieHandler.getDefault() == null) {
@@ -20,6 +22,8 @@ public final class TubeApplication extends Application {
             if (previous != null) previous.uncaughtException(thread, error);
         });
     }
+
+    ImageLoader imageLoader() { return imageLoader; }
 
     private void clearObsoleteCrashAfterUpdate() {
         try {

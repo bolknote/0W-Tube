@@ -83,6 +83,4 @@ final class ImageLoader {
         }
         return sample;
     }
-
-    void close() { executor.shutdownNow(); }
 }
