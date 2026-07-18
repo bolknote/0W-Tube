@@ -64,9 +64,11 @@ final class VkWebClient {
             long owner = video.optLong("owner_id");
             long videoId = video.optLong("id");
             String page = "https://vkvideo.ru/video" + owner + "_" + videoId;
-            result.add(new VideoItem("VK VIDEO", video.optString("title", "Видео VK"),
+            VideoItem item = new VideoItem("VK VIDEO", video.optString("title", "Видео VK"),
                     "", bestImage(video.optJSONArray("image"), thumbnailWidth), page, page,
-                    video.optLong("duration") * 1000L));
+                    video.optLong("duration") * 1000L);
+            int[] dimensions = maxAvailableDimensions(video);
+            result.add(item.withQuality(dimensions[0], dimensions[1]));
             if (result.size() >= LIMIT) break;
         }
         if (minWidth <= 0 || result.isEmpty()) return result;
@@ -102,6 +104,40 @@ final class VkWebClient {
 
     private static String key(JSONObject video) {
         return video.optLong("owner_id") + "_" + video.optLong("id");
+    }
+
+    private static int[] maxAvailableDimensions(JSONObject video) {
+        int bestHeight = 0;
+        JSONObject files = video.optJSONObject("files");
+        if (files != null) {
+            java.util.Iterator<String> keys = files.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                String url = files.optString(key);
+                if (!key.startsWith("mp4_")
+                        || !(url.startsWith("http") || url.startsWith("//"))) continue;
+                try {
+                    bestHeight = Math.max(bestHeight, Integer.parseInt(key.substring(4)));
+                } catch (NumberFormatException ignored) { }
+            }
+        }
+        if (bestHeight > 0) return new int[]{standardWidth(bestHeight), bestHeight};
+        return new int[]{Math.max(0, video.optInt("width")),
+                Math.max(0, video.optInt("height"))};
+    }
+
+    private static int standardWidth(int height) {
+        switch (height) {
+            case 144: return 256;
+            case 240: return 426;
+            case 360: return 640;
+            case 480: return 854;
+            case 720: return 1280;
+            case 1080: return 1920;
+            case 1440: return 2560;
+            case 2160: return 3840;
+            default: return Math.round(height * 16f / 9f);
+        }
     }
 
     private static String bestImage(JSONArray images, int targetWidth) {

@@ -16,7 +16,9 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.WindowManager;
+import android.view.animation.OvershootInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -57,6 +59,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class PlayerActivity extends Activity {
+    private static final long PLAYING_CONTROLS_TIMEOUT_MS = 3500L;
+    private static final long PAUSED_CONTROLS_TIMEOUT_MS = 1000L;
     private final ExecutorService resolver = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final Runnable progressTicker = new Runnable() {
@@ -74,7 +78,11 @@ public final class PlayerActivity extends Activity {
     private TextView time;
     private LinearLayout controls;
     private FrameLayout.LayoutParams controlsLayoutParams;
-    private final Runnable hideControls = () -> controls.setVisibility(View.GONE);
+    private final Runnable hideControls = () -> {
+        controls.animate().cancel();
+        controls.setTranslationY(0f);
+        controls.setVisibility(View.GONE);
+    };
     private String streamUrl;
     private String streamMimeType;
     private boolean autoPlay;
@@ -82,6 +90,7 @@ public final class PlayerActivity extends Activity {
     private boolean audioOnly;
     private int targetHeight;
     private boolean scrubbing;
+    private boolean controlsDragging;
     private boolean audioMovedToBackground;
     private boolean leavingPlayer;
     private long resumePosition;
@@ -146,7 +155,7 @@ public final class PlayerActivity extends Activity {
         root.addView(message, new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER));
         message.setText("Получаю видеопоток…");
 
-        controls = new LinearLayout(this);
+        controls = new DraggableControlsLayout();
         controls.setOrientation(LinearLayout.VERTICAL);
         controls.setBackgroundResource(R.drawable.player_controls_background);
         controls.setVisibility(audioOnly ? View.VISIBLE : View.GONE);
@@ -340,10 +349,7 @@ public final class PlayerActivity extends Activity {
 
             @Override public void onIsPlayingChanged(boolean isPlaying) {
                 updateControls();
-                ui.removeCallbacks(hideControls);
-                if (!audioOnly && isPlaying && controls.getVisibility() == View.VISIBLE) {
-                    ui.postDelayed(hideControls, 3500);
-                }
+                scheduleControlsHide();
             }
 
             @Override public void onVideoSizeChanged(VideoSize size) {
@@ -368,10 +374,21 @@ public final class PlayerActivity extends Activity {
     }
 
     private void showControls() {
+        boolean wasHidden = controls.getVisibility() != View.VISIBLE;
+        controls.animate().cancel();
+        if (wasHidden) controls.setTranslationY(0f);
         controls.setVisibility(View.VISIBLE);
         updateControls();
+        scheduleControlsHide();
+    }
+
+    private void scheduleControlsHide() {
         ui.removeCallbacks(hideControls);
-        if (!audioOnly && player != null && player.isPlaying()) ui.postDelayed(hideControls, 3500);
+        if (audioOnly || scrubbing || controlsDragging || player == null
+                || controls.getVisibility() != View.VISIBLE
+                || player.getPlaybackState() == Player.STATE_ENDED) return;
+        ui.postDelayed(hideControls, player.isPlaying()
+                ? PLAYING_CONTROLS_TIMEOUT_MS : PAUSED_CONTROLS_TIMEOUT_MS);
     }
 
     private void updateControls() {
@@ -453,6 +470,78 @@ public final class PlayerActivity extends Activity {
         controlsLayoutParams.setMargins(dp(horizontal) + safeLeft, 0,
                 dp(horizontal) + safeRight, dp(bottom) + safeBottom);
         if (controls != null) controls.setLayoutParams(controlsLayoutParams);
+    }
+
+    private final class DraggableControlsLayout extends LinearLayout {
+        private final int touchSlop;
+        private float downX;
+        private float downY;
+        private float startTranslation;
+        private boolean dragging;
+
+        DraggableControlsLayout() {
+            super(PlayerActivity.this);
+            touchSlop = ViewConfiguration.get(PlayerActivity.this).getScaledTouchSlop();
+        }
+
+        @Override public boolean onInterceptTouchEvent(MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    downX = event.getRawX();
+                    downY = event.getRawY();
+                    startTranslation = getTranslationY();
+                    dragging = false;
+                    animate().cancel();
+                    ui.removeCallbacks(hideControls);
+                    return false;
+                case MotionEvent.ACTION_MOVE:
+                    float dx = event.getRawX() - downX;
+                    float dy = event.getRawY() - downY;
+                    if (Math.abs(dy) > touchSlop && Math.abs(dy) > Math.abs(dx)) {
+                        dragging = true;
+                        controlsDragging = true;
+                        getParent().requestDisallowInterceptTouchEvent(true);
+                        return true;
+                    }
+                    return false;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    controlsDragging = false;
+                    scheduleControlsHide();
+                    return false;
+                default:
+                    return false;
+            }
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_MOVE:
+                    if (!dragging) return false;
+                    setTranslationY(startTranslation + rubberDistance(event.getRawY() - downY));
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (!dragging) return false;
+                    dragging = false;
+                    controlsDragging = false;
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                    animate().translationY(0f)
+                            .setDuration(240L)
+                            .setInterpolator(new OvershootInterpolator(0.6f))
+                            .withLayer()
+                            .withEndAction(PlayerActivity.this::scheduleControlsHide)
+                            .start();
+                    return true;
+                default:
+                    return true;
+            }
+        }
+
+        private float rubberDistance(float distance) {
+            float limit = Math.max(dp(48), getHeight() * 0.72f);
+            return distance / (1f + Math.abs(distance) / limit);
+        }
     }
 
     @Override public void onConfigurationChanged(Configuration configuration) {
