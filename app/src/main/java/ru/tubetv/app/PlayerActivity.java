@@ -487,23 +487,10 @@ public final class PlayerActivity extends Activity {
         @Override public boolean onInterceptTouchEvent(MotionEvent event) {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    downX = event.getRawX();
-                    downY = event.getRawY();
-                    startTranslation = getTranslationY();
-                    dragging = false;
-                    animate().cancel();
-                    ui.removeCallbacks(hideControls);
+                    beginGesture(event);
                     return false;
                 case MotionEvent.ACTION_MOVE:
-                    float dx = event.getRawX() - downX;
-                    float dy = event.getRawY() - downY;
-                    if (Math.abs(dy) > touchSlop && Math.abs(dy) > Math.abs(dx)) {
-                        dragging = true;
-                        controlsDragging = true;
-                        getParent().requestDisallowInterceptTouchEvent(true);
-                        return true;
-                    }
-                    return false;
+                    return startDraggingIfNeeded(event);
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
                     controlsDragging = false;
@@ -516,13 +503,20 @@ public final class PlayerActivity extends Activity {
 
         @Override public boolean onTouchEvent(MotionEvent event) {
             switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    beginGesture(event);
+                    return true;
                 case MotionEvent.ACTION_MOVE:
-                    if (!dragging) return false;
-                    setTranslationY(startTranslation + rubberDistance(event.getRawY() - downY));
+                    if (!startDraggingIfNeeded(event)) return true;
+                    moveWithFinger(event.getRawY() - downY);
                     return true;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    if (!dragging) return false;
+                    if (!dragging) {
+                        controlsDragging = false;
+                        scheduleControlsHide();
+                        return true;
+                    }
                     dragging = false;
                     controlsDragging = false;
                     getParent().requestDisallowInterceptTouchEvent(false);
@@ -538,9 +532,31 @@ public final class PlayerActivity extends Activity {
             }
         }
 
-        private float rubberDistance(float distance) {
-            float limit = Math.max(dp(48), getHeight() * 0.72f);
-            return distance / (1f + Math.abs(distance) / limit);
+        private void beginGesture(MotionEvent event) {
+            downX = event.getRawX();
+            downY = event.getRawY();
+            startTranslation = getTranslationY();
+            dragging = false;
+            animate().cancel();
+            ui.removeCallbacks(hideControls);
+        }
+
+        private boolean startDraggingIfNeeded(MotionEvent event) {
+            if (dragging) return true;
+            float dx = event.getRawX() - downX;
+            float dy = event.getRawY() - downY;
+            if (Math.abs(dy) <= touchSlop || Math.abs(dy) <= Math.abs(dx)) return false;
+            dragging = true;
+            controlsDragging = true;
+            getParent().requestDisallowInterceptTouchEvent(true);
+            return true;
+        }
+
+        private void moveWithFinger(float distance) {
+            float translation = startTranslation + distance;
+            float minimum = -getTop();
+            float maximum = ((View) getParent()).getHeight() - getBottom();
+            setTranslationY(Math.max(minimum, Math.min(maximum, translation)));
         }
     }
 
