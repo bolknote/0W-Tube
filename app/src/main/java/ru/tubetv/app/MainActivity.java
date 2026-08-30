@@ -252,7 +252,7 @@ public final class MainActivity extends Activity {
         status = text("", 11, Color.rgb(169, 176, 190));
         status.setGravity(Gravity.CENTER);
         status.setVisibility(View.INVISIBLE);
-        if (compact) {
+        if (compact && !compactLandscape) {
             filtersAndStatus.setOrientation(LinearLayout.VERTICAL);
             filtersAndStatus.setGravity(Gravity.NO_GRAVITY);
             filtersAndStatus.addView(filterScroll, new LinearLayout.LayoutParams(-1, dp(36)));
@@ -262,7 +262,9 @@ public final class MainActivity extends Activity {
             root.addView(filterBar, new LinearLayout.LayoutParams(-1, dp(62)));
         } else {
             filtersAndStatus.addView(filterScroll, new LinearLayout.LayoutParams(0, dp(36), 1f));
-            LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(dp(90), dp(36));
+            status.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
+                    dp(compact ? 88 : 90), dp(36));
             statusParams.setMargins(dp(8), 0, 0, 0);
             filtersAndStatus.addView(status, statusParams);
             filterBar = filtersAndStatus;
