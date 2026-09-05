@@ -8,6 +8,8 @@ android {
     namespace = 'ru.tubetv.app'
     compileSdk 36
 
+    buildFeatures { buildConfig = true }
+
     defaultConfig {
         applicationId 'ru.tubetv.app'
         minSdk 23

@@ -6,10 +6,6 @@ import android.content.SharedPreferences;
 final class StateStore {
     private static final String PREFS = "playback_state";
 
-    static void saveSearch(Context context, String query, int filter) {
-        saveSearch(context, query, filter, false);
-    }
-
     static void saveSearch(Context context, String query, int filter, boolean trafficMode) {
         prefs(context).edit()
                 .putString("screen", "search")
@@ -17,15 +13,6 @@ final class StateStore {
                 .putInt("filter", filter)
                 .putBoolean("traffic_mode", trafficMode)
                 .apply();
-    }
-
-    static void savePlayer(Context context, VideoItem item, long position) {
-        savePlayer(context, item, position, false, 0, false, false);
-    }
-
-    static void savePlayer(Context context, VideoItem item, long position,
-                           boolean trafficMode, int targetHeight, boolean audioOnly) {
-        savePlayer(context, item, position, trafficMode, targetHeight, audioOnly, false);
     }
 
     static void savePlayer(Context context, VideoItem item, long position,
@@ -50,8 +37,14 @@ final class StateStore {
                 .apply();
     }
 
-    static void savePlayerPosition(Context context, long position) {
-        prefs(context).edit().putLong("position", Math.max(0, position)).apply();
+    static void savePlayerPosition(Context context, String source, String pageUrl, long position) {
+        savePlayerPosition(prefs(context), source, pageUrl, position);
+    }
+
+    static void savePlayerPosition(SharedPreferences preferences, String source, String pageUrl, long position) {
+        if (!java.util.Objects.equals(source, preferences.getString("source", null))
+                || !java.util.Objects.equals(pageUrl, preferences.getString("page_url", null))) return;
+        preferences.edit().putLong("position", Math.max(0, position)).apply();
     }
 
     static void savePlaybackSpeed(Context context, float speed) {

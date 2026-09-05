@@ -5,8 +5,6 @@ import android.net.Uri;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -15,88 +13,61 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 import java.util.Locale;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 final class StreamResolver {
     private static final long CACHE_MS = 10 * 60 * 1000L;
-    private static final int MAX_DZEN_STREAMS = 36;
-    private static final ConcurrentHashMap<String, PlaybackInfo> CACHE = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<String, DzenStreams> DZEN_STREAMS =
-            new ConcurrentHashMap<>();
-
-    String resolve(String resolverUrl) throws Exception {
-        return resolveForPlayback(resolverUrl, false).streamUrl;
-    }
+    private static final ExpiringCache<String, MediaCapabilities> CAPABILITIES =
+            new ExpiringCache<>(256, 30 * 60 * 1000L);
+    private static final ExpiringCache<String, DzenStreams> DZEN_STREAMS =
+            new ExpiringCache<>(36, CACHE_MS);
 
     PlaybackInfo resolveForPlayback(String resolverUrl, boolean audioOnly) throws Exception {
+        PlaybackInfo result = resolve(resolverUrl, audioOnly, true);
+        if (result.maxWidth > 0) CAPABILITIES.put(resolverUrl, result.capabilities());
+        return result;
+    }
+
+    MediaCapabilities inspect(String url) throws Exception {
+        BoundedHttpReader.checkInterrupted();
+        MediaCapabilities cached = CAPABILITIES.get(url);
+        if (cached != null) return cached;
+        MediaCapabilities result = resolve(url, false, false).capabilities();
+        if (result.maxWidth > 0) CAPABILITIES.put(url, result);
+        return result;
+    }
+
+    private PlaybackInfo resolve(String resolverUrl, boolean audioOnly, boolean forPlayback) throws Exception {
+        BoundedHttpReader.checkInterrupted();
         if (PeerTubeClient.isApiUrl(resolverUrl)) {
-            return PeerTubeClient.resolve(resolverUrl, audioOnly);
+            return PeerTubeClient.resolve(resolverUrl, audioOnly, forPlayback);
         }
         if (resolverUrl != null && (resolverUrl.contains("dzen.ru/video/")
                 || resolverUrl.contains("zen.yandex.ru/video/"))) {
-            return inspectDzen(resolverUrl, true, audioOnly);
+            return inspectDzen(resolverUrl, forPlayback, audioOnly);
         }
         if (resolverUrl != null && (resolverUrl.contains("vkvideo.ru/")
                 || resolverUrl.contains("vk.com/video"))) {
             return inspectVk(resolverUrl, audioOnly);
         }
         if (OkClient.isOkUrl(resolverUrl)) {
-            return inspectOk(resolverUrl, true, audioOnly);
+            return inspectOk(resolverUrl, forPlayback, audioOnly);
         }
         return inspectRutube(resolverUrl, audioOnly);
     }
 
-    PlaybackInfo inspect(String url) throws Exception {
-        if (PeerTubeClient.isApiUrl(url)) {
-            return PeerTubeClient.resolve(url, false);
-        }
-        if (url != null && (url.contains("dzen.ru/video/") || url.contains("zen.yandex.ru/video/"))) {
-            return inspectDzen(url, false, false);
-        }
-        if (url != null && (url.contains("vkvideo.ru/") || url.contains("vk.com/video"))) {
-            return inspectVk(url, false);
-        }
-        if (OkClient.isOkUrl(url)) {
-            return inspectOk(url, false, false);
-        }
-        return inspectRutube(url, false);
-    }
-
     static void cacheDzen(String id, JSONObject video, int maxWidth, int maxHeight) {
         if (id == null || id.isEmpty() || video == null) return;
-        trimDzenStreams();
         DZEN_STREAMS.put(id, DzenStreams.from(video, maxWidth, maxHeight));
-    }
-
-    private static void trimDzenStreams() {
-        long now = System.currentTimeMillis();
-        String oldestKey = null;
-        long oldestTime = Long.MAX_VALUE;
-        for (Map.Entry<String, DzenStreams> entry : DZEN_STREAMS.entrySet()) {
-            DzenStreams value = entry.getValue();
-            if (now - value.loadedAt >= CACHE_MS) {
-                DZEN_STREAMS.remove(entry.getKey(), value);
-            } else if (value.loadedAt < oldestTime) {
-                oldestTime = value.loadedAt;
-                oldestKey = entry.getKey();
-            }
-        }
-        if (DZEN_STREAMS.size() >= MAX_DZEN_STREAMS && oldestKey != null) {
-            DZEN_STREAMS.remove(oldestKey);
+        if (maxWidth > 0) {
+            CAPABILITIES.put("https://dzen.ru/video/watch/" + id,
+                    new MediaCapabilities(maxWidth, maxHeight));
         }
     }
 
     private PlaybackInfo inspectDzen(String url, boolean forPlayback, boolean audioOnly) throws Exception {
         String id = findDzenId(url);
-        String cacheKey = "dzen:" + id + (audioOnly ? ":audio" : "");
-        PlaybackInfo cached = CACHE.get(cacheKey);
-        if (cached != null && System.currentTimeMillis() - cached.loadedAt < CACHE_MS) {
-            return cached;
-        }
-
-        DzenStreams streams = DZEN_STREAMS.get(id);
-        if (streams == null || System.currentTimeMillis() - streams.loadedAt >= CACHE_MS) {
+        DzenStreams streams = forPlayback ? null : DZEN_STREAMS.get(id);
+        if (streams == null) {
             String pageUrl = "https://dzen.ru/video/watch/" + id;
             String page = DzenClient.getPage(pageUrl);
             int metadata = page.indexOf("\"videoMetaResponse\"");
@@ -145,19 +116,10 @@ final class StreamResolver {
             maxWidth = 1920;
             maxHeight = 1080;
         }
-        PlaybackInfo result = new PlaybackInfo(stream, mime, maxWidth, maxHeight);
-        CACHE.put(cacheKey, result);
-        return result;
+        return new PlaybackInfo(stream, mime, maxWidth, maxHeight);
     }
 
     private PlaybackInfo inspectOk(String url, boolean forPlayback, boolean audioOnly) throws Exception {
-        String id = OkClient.findVideoId(url);
-        String cacheKey = "ok:" + id;
-        if (!forPlayback) {
-            PlaybackInfo cached = CACHE.get(cacheKey);
-            if (cached != null && System.currentTimeMillis() - cached.loadedAt < CACHE_MS) return cached;
-        }
-
         OkClient.PlayerData player = OkClient.loadPlayerData(url);
         if (player.externalUrl != null) {
             String external = player.externalUrl;
@@ -171,9 +133,7 @@ final class StreamResolver {
             throw new Exception("Видео OK размещено на неподдерживаемом внешнем сервисе");
         }
         if (player.mobileUrl != null) {
-            PlaybackInfo result = new PlaybackInfo(player.mobileUrl, 0, 0);
-            if (!forPlayback) CACHE.put(cacheKey, result);
-            return result;
+            return new PlaybackInfo(player.mobileUrl, 0, 0);
         }
 
         JSONObject metadata = player.metadata;
@@ -263,18 +223,12 @@ final class StreamResolver {
             }
             throw new Exception("Нет совместимого потока OK");
         }
-        PlaybackInfo result = new PlaybackInfo(stream, mime, maxWidth, maxHeight);
-        if (!forPlayback) CACHE.put(cacheKey, result);
-        return result;
+        return new PlaybackInfo(stream, mime, maxWidth, maxHeight);
     }
 
     private PlaybackInfo inspectRutube(String url, boolean audioOnly) throws Exception {
         String id = findRutubeId(url);
         String privateKey = queryParameter(url, "p");
-        String cacheKey = "rutube:" + id + ':' + (privateKey == null ? "" : privateKey)
-                + (audioOnly ? ":audio" : "");
-        PlaybackInfo cached = CACHE.get(cacheKey);
-        if (cached != null && System.currentTimeMillis() - cached.loadedAt < CACHE_MS) return cached;
         String optionsUrl = "https://rutube.ru/api/play/options/" + id
                 + "/?format=json&no_404=true&mq=all";
         if (privateKey != null && !privateKey.isEmpty()) {
@@ -328,9 +282,7 @@ final class StreamResolver {
             mime = null;
         }
         if (stream == null) throw new Exception("Нет совместимого потока RUTUBE");
-        PlaybackInfo result = new PlaybackInfo(stream, mime, maxWidth, maxHeight);
-        CACHE.put(cacheKey, result);
-        return result;
+        return new PlaybackInfo(stream, mime, maxWidth, maxHeight);
     }
 
     private static String queryParameter(String url, String name) {
@@ -344,23 +296,16 @@ final class StreamResolver {
 
     private PlaybackInfo inspectVk(String url, boolean audioOnly) throws Exception {
         String id = VkVideoId.fromUrl(url);
-        String cacheKey = "vk:" + id + (audioOnly ? ":audio" : "");
-        PlaybackInfo cached = CACHE.get(cacheKey);
-        if (cached != null && System.currentTimeMillis() - cached.loadedAt < CACHE_MS) return cached;
-
         Exception apiError;
         try {
-            PlaybackInfo result = inspectVkApi(id, audioOnly);
-            CACHE.put(cacheKey, result);
-            return result;
+            return inspectVkApi(id, audioOnly);
         } catch (Exception error) {
+            BoundedHttpReader.checkInterrupted();
             apiError = error;
         }
 
         try {
-            PlaybackInfo result = inspectVkLegacy(id, audioOnly);
-            CACHE.put(cacheKey, result);
-            return result;
+            return inspectVkLegacy(id, audioOnly);
         } catch (Exception legacyError) {
             legacyError.addSuppressed(apiError);
             throw legacyError;
@@ -391,8 +336,8 @@ final class StreamResolver {
         return inspectVkFiles(data, 0, 0, audioOnly);
     }
 
-    private PlaybackInfo inspectVkFiles(JSONObject files, int reportedWidth, int reportedHeight,
-                                        boolean audioOnly) throws Exception {
+    static PlaybackInfo inspectVkFiles(JSONObject files, int reportedWidth, int reportedHeight,
+                                       boolean audioOnly) throws Exception {
         String hls = httpUrl(files.optString("hls"));
         if (hls == null) hls = httpUrl(files.optString("hls_fmp4"));
         if (hls == null) hls = httpUrl(files.optString("hls_streams"));
@@ -430,6 +375,9 @@ final class StreamResolver {
                     "https://vkvideo.ru/", null) : null;
             stream = separateAudio != null ? separateAudio : hls;
             mime = "application/x-mpegURL";
+        } else if (fallback == null && dash != null) {
+            stream = dash;
+            mime = "application/dash+xml";
         } else {
             stream = audioOnly && lowestFallback != null ? lowestFallback : fallback;
             mime = null;
@@ -562,6 +510,7 @@ final class StreamResolver {
         int start;
         if (key.startsWith("url")) start = 3;
         else if (key.startsWith("cache")) start = 5;
+        else if (key.startsWith("mp4_")) start = 4;
         else return 0;
         int end = start;
         while (end < key.length() && Character.isDigit(key.charAt(end))) end++;
@@ -620,7 +569,6 @@ final class StreamResolver {
         final String audioFallback;
         final int maxWidth;
         final int maxHeight;
-        final long loadedAt = System.currentTimeMillis();
 
         private DzenStreams(String hls, String dash, String fallback,
                             String audioFallback, int maxWidth, int maxHeight) {
@@ -689,28 +637,25 @@ final class StreamResolver {
     }
 
     private static String get(String address, String referer, String userAgent) throws Exception {
+        BoundedHttpReader.checkInterrupted();
         HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
         connection.setConnectTimeout(8000);
         connection.setReadTimeout(8000);
         connection.setRequestProperty("Accept", "application/json,text/html,*/*");
         if (referer != null && !referer.isEmpty()) connection.setRequestProperty("Referer", referer);
-        connection.setRequestProperty("User-Agent", userAgent);
+        connection.setRequestProperty("User-Agent", userAgent == null ?
+                "Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36" : userAgent);
         try {
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("HTTP " + code);
-            InputStream input = connection.getInputStream();
-            ByteArrayOutputStream output = new ByteArrayOutputStream(64 * 1024);
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
-            input.close();
-            return output.toString(StandardCharsets.UTF_8.name());
+            return BoundedHttpReader.readText(connection.getInputStream(), BoundedHttpReader.MANIFEST_LIMIT);
         } finally {
             connection.disconnect();
         }
     }
 
     private static String postVk(String body) throws Exception {
+        BoundedHttpReader.checkInterrupted();
         HttpURLConnection connection = (HttpURLConnection) new URL("https://vk.com/al_video.php").openConnection();
         connection.setConnectTimeout(8000);
         connection.setReadTimeout(10_000);
@@ -730,12 +675,6 @@ final class StreamResolver {
             output.close();
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("VK Video: HTTP " + code);
-            InputStream input = connection.getInputStream();
-            ByteArrayOutputStream response = new ByteArrayOutputStream(96 * 1024);
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = input.read(buffer)) != -1) response.write(buffer, 0, read);
-            input.close();
             Charset charset = StandardCharsets.UTF_8;
             String type = connection.getContentType();
             if (type != null) {
@@ -745,7 +684,7 @@ final class StreamResolver {
                     try { charset = Charset.forName(name); } catch (Exception ignored) { }
                 }
             }
-            return response.toString(charset.name());
+            return BoundedHttpReader.readText(connection.getInputStream(), BoundedHttpReader.JSON_LIMIT, charset);
         } finally {
             connection.disconnect();
         }

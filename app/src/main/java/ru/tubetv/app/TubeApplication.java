@@ -2,18 +2,12 @@ package ru.tubetv.app;
 
 import android.app.Application;
 
-import java.net.CookieHandler;
-import java.net.CookieManager;
-import java.net.CookiePolicy;
-
 public final class TubeApplication extends Application {
     private final ImageLoader imageLoader = new ImageLoader();
 
     @Override public void onCreate() {
         super.onCreate();
-        if (CookieHandler.getDefault() == null) {
-            CookieHandler.setDefault(new CookieManager(null, CookiePolicy.ACCEPT_ALL));
-        }
+        ScopedCookies.install();
         clearObsoleteCrashAfterUpdate();
         new Thread(DeviceCapabilities::warmUp, "codec-detection").start();
         Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
@@ -24,6 +18,11 @@ public final class TubeApplication extends Application {
     }
 
     ImageLoader imageLoader() { return imageLoader; }
+
+    @Override public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_RUNNING_LOW) imageLoader.trimMemory();
+    }
 
     private void clearObsoleteCrashAfterUpdate() {
         try {

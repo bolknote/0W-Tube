@@ -5,7 +5,6 @@ final class PlaybackInfo {
     final String streamMimeType;
     final int maxWidth;
     final int maxHeight;
-    final long loadedAt;
 
     PlaybackInfo(String streamUrl, int maxWidth, int maxHeight) {
         this(streamUrl, null, maxWidth, maxHeight);
@@ -16,6 +15,7 @@ final class PlaybackInfo {
         this.streamMimeType = streamMimeType;
         this.maxWidth = maxWidth;
         this.maxHeight = maxHeight;
-        this.loadedAt = System.currentTimeMillis();
     }
+
+    MediaCapabilities capabilities() { return new MediaCapabilities(maxWidth, maxHeight); }
 }

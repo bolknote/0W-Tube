@@ -10,7 +10,9 @@
 
     <application
         android:name=".TubeApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:banner="@drawable/tv_banner"
         android:hardwareAccelerated="true"
         android:icon="@drawable/ic_launcher"

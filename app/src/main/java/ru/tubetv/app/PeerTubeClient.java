@@ -3,8 +3,6 @@ package ru.tubetv.app;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -18,14 +16,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /** Low-priority search and playback support for public videos in the PeerTube federation. */
 final class PeerTubeClient {
     static final String SOURCE = "PEERTUBE";
     private static final String SEARCH_ENDPOINT =
             "https://sepiasearch.org/api/v1/search/videos";
-    private static final String USER_AGENT = "0W-Tube/0.7.1 PeerTube";
+    private static final String USER_AGENT = "0W-Tube/" + BuildConfig.VERSION_NAME + " PeerTube";
     private static final int MIN_DURATION_SECONDS = 40 * 60;
     private static final int SEARCH_LIMIT = 20;
     private static final int RESULT_LIMIT = 3;
@@ -50,7 +47,7 @@ final class PeerTubeClient {
     private static final String[] AUDIO_CODECS =
             {"ac-3", "alac", "ec-3", "flac", "mp4a", "opus", "vorbis"};
     private static final Map<Character, String> TRANSLIT = transliterationTable();
-    private static final ConcurrentHashMap<String, Media> CACHE = new ConcurrentHashMap<>();
+    private static final ExpiringCache<String, Media> CACHE = new ExpiringCache<>(MAX_CACHE_ENTRIES, CACHE_MS);
 
     static List<VideoItem> search(String query, int minWidth, int thumbnailWidth) throws Exception {
         String normalized = queryForTitle(query);
@@ -79,8 +76,8 @@ final class PeerTubeClient {
         }
     }
 
-    static PlaybackInfo resolve(String apiUrl, boolean audioOnly) throws Exception {
-        Media media = loadMedia(apiUrl);
+    static PlaybackInfo resolve(String apiUrl, boolean audioOnly, boolean fresh) throws Exception {
+        Media media = loadMedia(apiUrl, fresh);
         if (audioOnly) {
             if (media.audioUrl == null) {
                 throw new Exception("PeerTube не отдал отдельный или низкокачественный аудиопоток");
@@ -109,7 +106,7 @@ final class PeerTubeClient {
             if (Thread.currentThread().isInterrupted() || inspected++ >= INSPECTION_LIMIT) break;
             Candidate candidate = ranked.candidate;
             try {
-                Media media = loadMedia(candidate.apiUrl);
+                Media media = loadMedia(candidate.apiUrl, false);
                 if (media.streamUrl == null || media.maxWidth < minWidth) continue;
                 String thumbnail = media.thumbnailFor(thumbnailWidth);
                 if (thumbnail == null) thumbnail = candidate.thumbnail;
@@ -249,10 +246,10 @@ final class PeerTubeClient {
         return previous[right.length()];
     }
 
-    private static Media loadMedia(String apiUrl) throws Exception {
+    private static Media loadMedia(String apiUrl, boolean fresh) throws Exception {
         if (!isApiUrl(apiUrl)) throw new Exception("Неверный адрес PeerTube");
-        Media cached = CACHE.get(apiUrl);
-        if (cached != null && System.currentTimeMillis() - cached.loadedAt < CACHE_MS) return cached;
+        Media cached = fresh ? null : CACHE.get(apiUrl);
+        if (cached != null) return cached;
 
         JSONObject metadata = getJson(apiUrl, MAX_JSON_BYTES);
         String base = origin(apiUrl);
@@ -345,7 +342,6 @@ final class PeerTubeClient {
 
         Media result = new Media(streamUrl, streamMime, audioUrl, audioMime,
                 maxWidth, maxHeight, metadata.optLong("duration"), thumbnails);
-        trimCache();
         CACHE.put(apiUrl, result);
         return result;
     }
@@ -463,26 +459,12 @@ final class PeerTubeClient {
         if (url != null && !values.containsKey(url)) values.put(url, new Thumbnail(url, 0, 0));
     }
 
-    private static void trimCache() {
-        long now = System.currentTimeMillis();
-        String oldestKey = null;
-        long oldest = Long.MAX_VALUE;
-        for (Map.Entry<String, Media> entry : CACHE.entrySet()) {
-            Media value = entry.getValue();
-            if (now - value.loadedAt >= CACHE_MS) CACHE.remove(entry.getKey(), value);
-            else if (value.loadedAt < oldest) {
-                oldest = value.loadedAt;
-                oldestKey = entry.getKey();
-            }
-        }
-        if (CACHE.size() >= MAX_CACHE_ENTRIES && oldestKey != null) CACHE.remove(oldestKey);
-    }
-
     private static JSONObject getJson(String address, int limit) throws Exception {
         return new JSONObject(getText(address, limit));
     }
 
     private static String getText(String address, int limit) throws Exception {
+        BoundedHttpReader.checkInterrupted();
         HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
         connection.setConnectTimeout(TIMEOUT_MS);
         connection.setReadTimeout(TIMEOUT_MS);
@@ -491,16 +473,7 @@ final class PeerTubeClient {
         try {
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("PeerTube: HTTP " + code);
-            InputStream input = connection.getInputStream();
-            ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(limit, 64 * 1024));
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = input.read(buffer)) != -1) {
-                if (output.size() + read > limit) throw new Exception("Ответ PeerTube слишком большой");
-                output.write(buffer, 0, read);
-            }
-            input.close();
-            return output.toString(StandardCharsets.UTF_8.name());
+            return BoundedHttpReader.readText(connection.getInputStream(), limit);
         } finally {
             connection.disconnect();
         }
@@ -758,7 +731,6 @@ final class PeerTubeClient {
         final int maxHeight;
         final long durationSeconds;
         final List<Thumbnail> thumbnails;
-        final long loadedAt = System.currentTimeMillis();
 
         Media(String streamUrl, String streamMimeType, String audioUrl, String audioMimeType,
               int maxWidth, int maxHeight, long durationSeconds, List<Thumbnail> thumbnails) {

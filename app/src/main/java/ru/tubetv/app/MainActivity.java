@@ -49,12 +49,16 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public final class MainActivity extends Activity {
     private static final int REQUEST_INSTALL_SOURCE = 4307;
     private final SearchClient searchClient = new SearchClient();
-    private final ExecutorService network = Executors.newFixedThreadPool(4);
+    private final ThreadPoolExecutor network = new ThreadPoolExecutor(4, 4,
+            0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(64));
     private final ExecutorService historyIo = Executors.newSingleThreadExecutor();
     private final AtomicInteger generation = new AtomicInteger();
     private final AtomicInteger historyGeneration = new AtomicInteger();
@@ -92,16 +96,6 @@ public final class MainActivity extends Activity {
     private boolean dzenDone;
     private boolean okDone;
     private boolean peerTubeDone;
-    private int rutubeCount;
-    private int vkCount;
-    private int dzenCount;
-    private int okCount;
-    private int peerTubeCount;
-    private String rutubeError;
-    private String vkError;
-    private String dzenError;
-    private String okError;
-    private String peerTubeError;
     private String currentSearchQuery = "";
     private int qualityJobs;
     private boolean historyMode;
@@ -114,6 +108,9 @@ public final class MainActivity extends Activity {
     private boolean updateDialogVisible;
     private String offeredUpdateVersion;
     private Object systemBackCallback;
+    private AlertDialog updateProgress;
+    private String pendingUpdateError;
+    private boolean deferredInstall;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -286,7 +283,9 @@ public final class MainActivity extends Activity {
         grid.setDrawSelectorOnTop(true);
         adapter = new VideoAdapter(this);
         grid.setAdapter(adapter);
-        grid.setOnItemClickListener((parent, view, position, id) -> play(items.get(position)));
+        grid.setOnItemClickListener((parent, view, position, id) -> {
+            if (position >= 0 && position < items.size()) play(items.get(position));
+        });
         GestureDetector swipe = new GestureDetector(this,
                 new GestureDetector.SimpleOnGestureListener() {
                     @Override public boolean onDown(MotionEvent event) { return true; }
@@ -435,6 +434,7 @@ public final class MainActivity extends Activity {
         currentSearchQuery = value;
         for (Future<?> search : activeSearches) search.cancel(true);
         activeSearches.clear();
+        network.purge();
         allItems.clear();
         searchItems.clear();
         if (!historyMode) items.clear();
@@ -448,16 +448,6 @@ public final class MainActivity extends Activity {
         dzenDone = false;
         okDone = false;
         peerTubeDone = false;
-        rutubeCount = 0;
-        vkCount = 0;
-        dzenCount = 0;
-        okCount = 0;
-        peerTubeCount = 0;
-        rutubeError = null;
-        vkError = null;
-        dzenError = null;
-        okError = null;
-        peerTubeError = null;
         updateSearchStatus();
         activeSearches.add(network.submit(
                 () -> runSource(current, "RUTUBE", () -> searchClient.searchRutube(value, 0))));
@@ -514,23 +504,21 @@ public final class MainActivity extends Activity {
             runOnUiThread(() -> {
                 if (current != generation.get()) return;
                 allItems.addAll(found);
-                finishSource(source, found.size(), null);
+                finishSource(source);
                 refreshDisplayedItems(true);
                 requestMissingQualities(current, found);
             });
         } catch (Exception e) {
             runOnUiThread(() -> {
-                if (current == generation.get()) finishSource(source, 0, safeMessage(e));
+                if (current == generation.get()) finishSource(source);
             });
         }
     }
 
     private void runVkSource(int current, String value) {
-        int[] delivered = {0};
         try {
-            int count = searchClient.searchVkPages(value, 0, thumbnailTargetWidth, found -> {
+            searchClient.searchVkPages(value, 0, thumbnailTargetWidth, found -> {
                 if (Thread.currentThread().isInterrupted() || current != generation.get()) return false;
-                delivered[0] += found.size();
                 runOnUiThread(() -> {
                     if (current != generation.get()) return;
                     allItems.addAll(found);
@@ -540,25 +528,23 @@ public final class MainActivity extends Activity {
                 return true;
             });
             runOnUiThread(() -> {
-                if (current == generation.get()) finishSource("VK Video", count, null);
+                if (current == generation.get()) finishSource("VK Video");
             });
         } catch (Exception e) {
             runOnUiThread(() -> {
                 if (current == generation.get()) {
-                    finishSource("VK Video", delivered[0], safeMessage(e));
+                    finishSource("VK Video");
                 }
             });
         }
     }
 
     private void runDzenSource(int current, String value) {
-        int[] delivered = {0};
         try {
-            int count = searchClient.searchDzenPages(value, found -> {
+            searchClient.searchDzenPages(value, found -> {
                 if (Thread.currentThread().isInterrupted() || current != generation.get()) {
                     return false;
                 }
-                delivered[0] += found.size();
                 runOnUiThread(() -> {
                     if (current != generation.get()) return;
                     allItems.addAll(found);
@@ -568,38 +554,28 @@ public final class MainActivity extends Activity {
                 return true;
             });
             runOnUiThread(() -> {
-                if (current == generation.get()) finishSource("Дзен", count, null);
+                if (current == generation.get()) finishSource("Дзен");
             });
         } catch (Exception e) {
             runOnUiThread(() -> {
                 if (current == generation.get()) {
-                    finishSource("Дзен", delivered[0], safeMessage(e));
+                    finishSource("Дзен");
                 }
             });
         }
     }
 
-    private void finishSource(String source, int count, String error) {
+    private void finishSource(String source) {
         if ("RUTUBE".equals(source)) {
             rutubeDone = true;
-            rutubeCount = count;
-            rutubeError = error;
         } else if ("VK Video".equals(source)) {
             vkDone = true;
-            vkCount = count;
-            vkError = error;
         } else if ("Дзен".equals(source)) {
             dzenDone = true;
-            dzenCount = count;
-            dzenError = error;
         } else if ("OK".equals(source)) {
             okDone = true;
-            okCount = count;
-            okError = error;
         } else if (PeerTubeClient.SOURCE.equals(source)) {
             peerTubeDone = true;
-            peerTubeCount = count;
-            peerTubeError = error;
         }
         updateSearchStatus();
     }
@@ -667,6 +643,9 @@ public final class MainActivity extends Activity {
                     VideoItem replacement = byKey.get(allItems.get(i).stableKey());
                     if (replacement != null) allItems.set(i, replacement);
                 }
+                for (VideoItem item : missing) {
+                    if (!byKey.containsKey(item.stableKey())) qualityRequested.remove(item.stableKey());
+                }
                 qualityJobs = Math.max(0, qualityJobs - 1);
                 refreshDisplayedItems(false);
             });
@@ -723,7 +702,8 @@ public final class MainActivity extends Activity {
         boolean audioOnly = history == null
                 ? trafficMode && targetHeight == 0
                 : history.audioOnly;
-        if (watched.positionMs >= WatchProgressStore.MIN_POSITION_MS) {
+        if (WatchHistoryStore.contains(this, item)
+                || watched.positionMs >= WatchProgressStore.MIN_POSITION_MS) {
             WatchHistoryStore.record(this, item.withDuration(duration),
                     playerTrafficMode, targetHeight, audioOnly);
         }
@@ -892,14 +872,23 @@ public final class MainActivity extends Activity {
         unregisterSystemBackCallback();
         generation.incrementAndGet();
         historyGeneration.incrementAndGet();
+        for (Future<?> search : activeSearches) search.cancel(true);
+        activeSearches.clear();
         network.shutdownNow();
         historyIo.shutdownNow();
+        if (updateProgress != null) updateProgress.dismiss();
         super.onDestroy();
     }
 
     @Override protected void onResume() {
         super.onResume();
         activityResumed = true;
+        if (deferredInstall && pendingUpdateApk != null) installUpdate(pendingUpdateApk);
+        if (pendingUpdateError != null) {
+            String error = pendingUpdateError;
+            pendingUpdateError = null;
+            showUpdateError(error);
+        }
         String savedScreen = StateStore.screen(this);
         if ("history".equals(savedScreen) && !historyMode) showHistory(true);
         else if ("search".equals(savedScreen) && historyMode) showSearch(true);
@@ -948,23 +937,30 @@ public final class MainActivity extends Activity {
                 .setMessage("Скачиваю APK…")
                 .setCancelable(false)
                 .create();
+        updateProgress = progress;
         progress.show();
         UpdateManager.download(this, release, new UpdateManager.DownloadCallback() {
             @Override public void onProgress(int percent) {
-                runOnUiThread(() -> progress.setMessage(percent >= 0
-                        ? "Скачиваю APK: " + percent + "%" : "Скачиваю APK…"));
+                runOnUiThread(() -> {
+                    if (!isDestroyed() && !isFinishing()) progress.setMessage(percent >= 0
+                            ? "Скачиваю APK: " + percent + "%" : "Скачиваю APK…");
+                });
             }
 
             @Override public void onReady(File apk) {
                 runOnUiThread(() -> {
+                    if (isDestroyed() || isFinishing()) return;
                     progress.dismiss();
+                    updateProgress = null;
                     installUpdate(apk);
                 });
             }
 
             @Override public void onError(String message) {
                 runOnUiThread(() -> {
+                    if (isDestroyed() || isFinishing()) return;
                     progress.dismiss();
+                    updateProgress = null;
                     showUpdateError(message);
                 });
             }
@@ -973,6 +969,8 @@ public final class MainActivity extends Activity {
 
     private void installUpdate(File apk) {
         pendingUpdateApk = apk;
+        deferredInstall = !activityResumed;
+        if (!activityResumed || isDestroyed() || isFinishing()) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 && !getPackageManager().canRequestPackageInstalls()) {
             try {
@@ -988,6 +986,7 @@ public final class MainActivity extends Activity {
     }
 
     private void launchPackageInstaller(File apk) {
+        pendingUpdateApk = null;
         try {
             Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", apk);
             Intent install = new Intent(Intent.ACTION_INSTALL_PACKAGE);
@@ -1012,7 +1011,8 @@ public final class MainActivity extends Activity {
     }
 
     private void showUpdateError(String message) {
-        if (isFinishing()) return;
+        if (isFinishing() || isDestroyed()) return;
+        if (!activityResumed) { pendingUpdateError = message; return; }
         new AlertDialog.Builder(this).setTitle("Не удалось обновить 0W-Tube")
                 .setMessage(message).setPositiveButton("Закрыть", null).show();
     }

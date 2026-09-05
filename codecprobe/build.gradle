@@ -2,6 +2,8 @@ plugins {
     id 'com.android.application'
 }
 
+def releaseKeystorePath = System.getenv('RELEASE_KEYSTORE_PATH')
+
 android {
     namespace = 'ru.tubetv.codecprobe'
     compileSdk 36
@@ -20,18 +22,19 @@ android {
     }
 
     signingConfigs {
-        release {
-            def keystorePath = System.getenv('RELEASE_KEYSTORE_PATH')
-            storeFile keystorePath ? file(keystorePath) : null
-            storePassword System.getenv('RELEASE_STORE_PASSWORD')
-            keyAlias System.getenv('RELEASE_KEY_ALIAS')
-            keyPassword System.getenv('RELEASE_KEY_PASSWORD')
+        if (releaseKeystorePath) {
+            release {
+                storeFile file(releaseKeystorePath)
+                storePassword System.getenv('RELEASE_STORE_PASSWORD')
+                keyAlias System.getenv('RELEASE_KEY_ALIAS')
+                keyPassword System.getenv('RELEASE_KEY_PASSWORD')
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.release
+            if (releaseKeystorePath) signingConfig = signingConfigs.release
             minifyEnabled true
             shrinkResources = true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'

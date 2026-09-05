@@ -19,12 +19,5 @@ final class CrashLog {
         } catch (Throwable ignored) { }
     }
 
-    static String consume(Context context) {
-        android.content.SharedPreferences preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        String value = preferences.getString(KEY, null);
-        if (value != null) preferences.edit().remove(KEY).apply();
-        return value;
-    }
-
     private CrashLog() { }
 }

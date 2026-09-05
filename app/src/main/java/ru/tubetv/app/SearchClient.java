@@ -5,16 +5,10 @@ import android.net.Uri;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedInputStream;
-import java.io.ByteArrayOutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 
 final class SearchClient {
     private static final int LIMIT = 12;
@@ -42,21 +36,9 @@ final class SearchClient {
         return filterByQuality(result, minWidth);
     }
 
-    List<VideoItem> searchVk(String query, int minWidth) throws Exception {
-        return searchVk(query, minWidth, 480);
-    }
-
-    List<VideoItem> searchVk(String query, int minWidth, int thumbnailWidth) throws Exception {
-        return new VkWebClient().search(query, minWidth, thumbnailWidth);
-    }
-
     int searchVkPages(String query, int minWidth, int thumbnailWidth,
                       VkWebClient.PageListener listener) throws Exception {
         return new VkWebClient().searchPages(query, minWidth, thumbnailWidth, listener);
-    }
-
-    List<VideoItem> searchDzen(String query, int minWidth) throws Exception {
-        return new DzenClient().search(query, minWidth);
     }
 
     List<VideoItem> searchOk(String query, int minWidth) throws Exception {
@@ -96,46 +78,24 @@ final class SearchClient {
     }
 
     static List<VideoItem> inspectQualities(List<VideoItem> candidates, int maxParallelRequests) {
-        if (candidates.isEmpty()) return new ArrayList<>();
-        int workers = Math.max(1, Math.min(maxParallelRequests, candidates.size()));
-        ExecutorService probes = Executors.newFixedThreadPool(workers);
-        try {
-            List<Future<VideoItem>> futures = new ArrayList<>();
-            for (VideoItem item : candidates) {
-                futures.add(probes.submit(() -> {
-                    PlaybackInfo info = new StreamResolver().inspect(item.playUrl);
-                    return item.withQuality(info.maxWidth, info.maxHeight);
-                }));
-            }
-            List<VideoItem> inspected = new ArrayList<>();
-            for (Future<VideoItem> future : futures) {
-                if (Thread.currentThread().isInterrupted()) break;
-                try {
-                    VideoItem item = future.get();
-                    if (item != null) inspected.add(item);
-                } catch (Exception ignored) { }
-            }
-            return inspected;
-        } finally {
-            probes.shutdownNow();
-        }
+        return ParallelTasks.map(candidates, maxParallelRequests, item -> {
+            MediaCapabilities info = new StreamResolver().inspect(item.playUrl);
+            return item.withQuality(info.maxWidth, info.maxHeight);
+        });
     }
 
     private static JSONObject getJson(String address) throws Exception {
+        BoundedHttpReader.checkInterrupted();
         HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
         connection.setConnectTimeout(TIMEOUT_MS);
         connection.setReadTimeout(TIMEOUT_MS);
         connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty("User-Agent", "0W-Tube/0.5.14 AndroidTV");
+        connection.setRequestProperty("User-Agent", "0W-Tube/" + BuildConfig.VERSION_NAME + " Android");
         try {
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("HTTP " + code);
-            BufferedInputStream input = new BufferedInputStream(connection.getInputStream());
-            ByteArrayOutputStream output = new ByteArrayOutputStream(32 * 1024);
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
-            return new JSONObject(output.toString(StandardCharsets.UTF_8.name()));
+            return new JSONObject(BoundedHttpReader.readText(connection.getInputStream(),
+                    BoundedHttpReader.JSON_LIMIT));
         } finally {
             connection.disconnect();
         }

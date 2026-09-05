@@ -5,8 +5,6 @@ import android.net.Uri;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -24,7 +22,7 @@ final class VkWebClient {
     private static final int TIMEOUT_MS = 10_000;
     private static final String CLIENT_ID = "52461373";
     private static final String API_VERSION = "5.282";
-    private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             + "AppleWebKit/537.36 Chrome/150.0.0.0 Safari/537.36";
     private static String anonymousToken;
     private static long tokenExpiresAt;
@@ -44,7 +42,7 @@ final class VkWebClient {
         JSONObject root = postJson(address, body);
         JSONObject error = root.optJSONObject("error");
         if (error != null) {
-            if (retryToken && error.optInt("error_code") == 5) {
+            if (retryToken && isAuthorizationError(root)) {
                 clearAnonymousToken();
                 return getVideoById(videoId, false);
             }
@@ -283,6 +281,7 @@ final class VkWebClient {
     }
 
     private static JSONObject getJson(String address) throws Exception {
+        BoundedHttpReader.checkInterrupted();
         HttpURLConnection connection = configure((HttpURLConnection) new URL(address).openConnection());
         try {
             int code = connection.getResponseCode();
@@ -294,6 +293,7 @@ final class VkWebClient {
     }
 
     private static JSONObject postJson(String address, String body) throws Exception {
+        BoundedHttpReader.checkInterrupted();
         HttpURLConnection connection = configure((HttpURLConnection) new URL(address).openConnection());
         connection.setRequestMethod("POST");
         connection.setDoOutput(true);
@@ -324,13 +324,7 @@ final class VkWebClient {
     }
 
     private static String read(HttpURLConnection connection) throws Exception {
-        InputStream input = connection.getInputStream();
-        ByteArrayOutputStream output = new ByteArrayOutputStream(128 * 1024);
-        byte[] buffer = new byte[8192];
-        int count;
-        while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-        input.close();
-        return output.toString(StandardCharsets.UTF_8.name());
+        return BoundedHttpReader.readText(connection.getInputStream(), BoundedHttpReader.JSON_LIMIT);
     }
 
     private static final class PageCursor {

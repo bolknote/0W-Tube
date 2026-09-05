@@ -32,29 +32,16 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
-import androidx.media3.common.AudioAttributes;
-import androidx.media3.common.MediaItem;
 import androidx.media3.common.C;
-import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.VideoSize;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.datasource.DefaultHttpDataSource;
-import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
-import androidx.media3.exoplayer.mediacodec.MediaCodecInfo;
-import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 
 import java.util.ArrayList;
-import java.net.CookieHandler;
-import java.net.CookieManager;
-import java.net.CookiePolicy;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -68,7 +55,7 @@ public final class PlayerActivity extends Activity {
     private final Runnable progressTicker = new Runnable() {
         @Override public void run() {
             updateControls();
-            ui.postDelayed(this, 1000);
+            if (activityStarted && !audioMovedToBackground) ui.postDelayed(this, 1000);
         }
     };
     private ExoPlayer player;
@@ -123,7 +110,8 @@ public final class PlayerActivity extends Activity {
     private long dpadSeekPosition;
     private float playbackSpeed;
     private VideoItem historyItem;
-    private Thread.UncaughtExceptionHandler previousCrashHandler;
+    private boolean activityStarted;
+    private boolean destroyed;
     private final Runnable openMenuFromLongCenter = () -> {
         if (centerKeyHeld && player != null) {
             centerLongPressTriggered = true;
@@ -142,11 +130,6 @@ public final class PlayerActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
-        previousCrashHandler = Thread.getDefaultUncaughtExceptionHandler();
-        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
-            CrashLog.save(getApplicationContext(), error);
-            if (previousCrashHandler != null) previousCrashHandler.uncaughtException(thread, error);
-        });
         autoPlay = getIntent().getBooleanExtra("auto_play", true);
         trafficMode = getIntent().getBooleanExtra("traffic_mode", false);
         audioOnly = getIntent().getBooleanExtra("audio_only", false);
@@ -172,8 +155,9 @@ public final class PlayerActivity extends Activity {
         }
         mirrored = WatchProgressStore.isMirrored(this, videoSource, videoIdentityUrl);
         if (getIntent().getBooleanExtra("resume_background_audio", false)) {
-            stopService(new Intent(this, AudioPlaybackService.class));
-            resumePosition = StateStore.position(this);
+            resumePosition = AudioPlaybackService.takePosition(this, historyItem, resumePosition);
+        } else {
+            AudioPlaybackService.stopPlayback(this);
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
@@ -377,12 +361,18 @@ public final class PlayerActivity extends Activity {
             try {
                 PlaybackInfo resolved = new StreamResolver().resolveForPlayback(url, audioOnly);
                 runOnUiThread(() -> {
+                    if (destroyed || isFinishing()) return;
                     streamUrl = resolved.streamUrl;
                     streamMimeType = resolved.streamMimeType;
-                    startPlayerSafely();
+                    if (activityStarted) startPlayerSafely();
                 });
             } catch (Exception error) {
-                runOnUiThread(() -> showError(error.getMessage() == null ? "Видео больше недоступно" : error.getMessage()));
+                if (Thread.currentThread().isInterrupted()) return;
+                runOnUiThread(() -> {
+                    if (!destroyed && !isFinishing()) {
+                        showError(error.getMessage() == null ? "Видео больше недоступно" : error.getMessage());
+                    }
+                });
             }
         });
     }
@@ -400,81 +390,10 @@ public final class PlayerActivity extends Activity {
 
     @OptIn(markerClass = UnstableApi.class)
     private void startPlayer() {
-        if (streamUrl == null || player != null) return;
-        Map<String, String> headers = new HashMap<>();
-        String source = getIntent().getStringExtra("source");
-        boolean vk = "VK VIDEO".equals(source);
-        boolean dzen = "ДЗЕН".equals(source);
-        boolean ok = "OK".equals(source);
-        boolean peerTube = PeerTubeClient.SOURCE.equals(source);
-        if (dzen) {
-            CookieHandler.setDefault(new CookieManager(null, CookiePolicy.ACCEPT_ALL));
-        } else {
-            if (ok) CookieHandler.setDefault(new CookieManager(null, CookiePolicy.ACCEPT_NONE));
-            headers.put("Referer", vk ? "https://vkvideo.ru/"
-                    : ok ? OkClient.REFERER
-                    : peerTube ? getIntent().getStringExtra("page_url") : "https://rutube.ru/");
-        }
-        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
-                .setUserAgent(dzen ? DzenClient.USER_AGENT : vk
-                        ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/150 Safari/537.36"
-                        : ok ? OkClient.USER_AGENT
-                        : "Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36")
-                .setConnectTimeoutMs(8_000)
-                .setReadTimeoutMs(10_000)
-                .setAllowCrossProtocolRedirects(true)
-                .setDefaultRequestProperties(headers);
-        DeviceCapabilities capabilities = DeviceCapabilities.get();
-        MediaCodecSelector hardwareSelector = (mimeType, secure, tunneling) -> {
-            List<MediaCodecInfo> available = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling);
-            if (!mimeType.startsWith("video/") && !mimeType.startsWith("audio/")) return available;
-            boolean video = mimeType.startsWith("video/");
-            List<MediaCodecInfo> hardware = new ArrayList<>();
-            for (MediaCodecInfo codec : available) {
-                if (codec.hardwareAccelerated && !codec.softwareOnly) hardware.add(codec);
-            }
-            if (video) {
-                return capabilities.supportsHardware(mimeType) ? hardware : new ArrayList<>();
-            }
-            // Some TV firmware advertises a hardware AAC decoder that accepts mono only.
-            // Keep compatible software audio decoders after hardware candidates so Media3
-            // can fall back for stereo tracks without ever allowing software video.
-            List<MediaCodecInfo> ordered = new ArrayList<>(hardware);
-            for (MediaCodecInfo codec : available) {
-                if (!hardware.contains(codec)) ordered.add(codec);
-            }
-            return ordered;
-        };
-        player = new ExoPlayer.Builder(this)
-                .setRenderersFactory(new DefaultRenderersFactory(this)
-                        .setMediaCodecSelector(hardwareSelector)
-                        .setEnableDecoderFallback(true))
-                .setMediaSourceFactory(new DefaultMediaSourceFactory(http))
-                .build();
-        androidx.media3.common.TrackSelectionParameters.Builder tracks =
-                player.getTrackSelectionParameters().buildUpon();
-        String[] preferredVideo = capabilities.preferredVideoMimes(trafficMode);
-        String[] preferredAudio = capabilities.preferredAudioMimes(trafficMode);
-        if (preferredVideo.length > 0) tracks.setPreferredVideoMimeTypes(preferredVideo);
-        if (preferredAudio.length > 0) tracks.setPreferredAudioMimeTypes(preferredAudio);
-        if (trafficMode) {
-            int[] size = videoSizeForHeight(targetHeight == 0 ? 144 : targetHeight);
-            tracks.setMaxVideoSize(size[0], size[1])
-                    .setForceHighestSupportedBitrate(!audioOnly)
-                    .setForceLowestBitrate(audioOnly);
-            if (audioOnly) {
-                tracks.setMaxVideoBitrate(144_000)
-                        .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true);
-                videoSurface.setVisibility(View.INVISIBLE);
-            }
-        } else {
-            tracks.setMaxVideoSize(3840, 2160).setForceHighestSupportedBitrate(true);
-        }
-        player.setTrackSelectionParameters(tracks.build());
-        player.setAudioAttributes(new AudioAttributes.Builder()
-                .setUsage(C.USAGE_MEDIA)
-                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-                .build(), true);
+        if (!activityStarted || destroyed || isFinishing() || streamUrl == null || player != null) return;
+        player = PlaybackEngineFactory.create(this, videoSource, videoIdentityUrl,
+                trafficMode, targetHeight, audioOnly);
+        if (audioOnly) videoSurface.setVisibility(View.INVISIBLE);
         videoSurface.setMirrored(mirrored);
         Surface output = videoSurface.getVideoSurface();
         if (output != null) player.setVideoSurface(output);
@@ -504,16 +423,17 @@ public final class PlayerActivity extends Activity {
                 showError("Ошибка воспроизведения: " + error.getErrorCodeName());
             }
         });
-        MediaItem.Builder item = new MediaItem.Builder().setUri(streamUrl);
-        if (streamMimeType != null) item.setMimeType(streamMimeType);
-        else if (streamUrl.contains(".m3u8")) item.setMimeType(MimeTypes.APPLICATION_M3U8);
-        else if (streamUrl.contains(".mpd")) item.setMimeType(MimeTypes.APPLICATION_MPD);
-        player.setMediaItem(item.build());
+        player.setMediaItem(PlaybackEngineFactory.mediaItem(streamUrl, streamMimeType));
         if (resumePosition > 0) player.seekTo(resumePosition);
         player.setPlaybackSpeed(playbackSpeed);
         player.setPlayWhenReady(autoPlay);
         player.prepare();
-        ui.post(progressTicker);
+        restartProgressTicker();
+    }
+
+    private void restartProgressTicker() {
+        ui.removeCallbacks(progressTicker);
+        if (activityStarted && player != null && !audioMovedToBackground) ui.post(progressTicker);
     }
 
     private void showControls() {
@@ -552,8 +472,8 @@ public final class PlayerActivity extends Activity {
         }
         playState.setText(player.isPlaying() ? "Ⅱ" : "▶");
         long now = System.currentTimeMillis();
-        if (now - lastSavedAt > 5000) {
-            StateStore.savePlayerPosition(this, position);
+        if (activityStarted && !audioMovedToBackground && now - lastSavedAt > 5000) {
+            StateStore.savePlayerPosition(this, videoSource, videoIdentityUrl, position);
             saveWatchProgress(position, duration);
             lastSavedAt = now;
         }
@@ -718,16 +638,6 @@ public final class PlayerActivity extends Activity {
         if (Math.abs(speed - 0.75f) < 0.001f) return "0,75×";
         if (Math.abs(speed - 1.25f) < 0.001f) return "1,25×";
         return "1,5×";
-    }
-
-    private static int[] videoSizeForHeight(int height) {
-        switch (height) {
-            case 720: return new int[]{1280, 720};
-            case 480: return new int[]{854, 480};
-            case 360: return new int[]{640, 360};
-            case 240: return new int[]{426, 240};
-            default: return new int[]{256, 144};
-        }
     }
 
     private static String formatTime(long millis) {
@@ -938,9 +848,9 @@ public final class PlayerActivity extends Activity {
 
     private void saveProgress() {
         saveMirrorState();
-        if (player != null) {
+        if (player != null && !audioMovedToBackground) {
             long position = player.getCurrentPosition();
-            StateStore.savePlayerPosition(this, position);
+            StateStore.savePlayerPosition(this, videoSource, videoIdentityUrl, position);
             saveWatchProgress(position, player.getDuration());
         }
     }
@@ -956,8 +866,8 @@ public final class PlayerActivity extends Activity {
                 ? duration : knownDuration;
         if (actualDuration > 0) knownDuration = actualDuration;
         WatchProgressStore.save(this,
-                getIntent().getStringExtra("source"),
-                getIntent().getStringExtra("page_url"),
+                videoSource,
+                videoIdentityUrl,
                 Math.max(0L, position),
                 Math.max(0L, actualDuration));
         if (!historyRecordedThisSession && position >= WatchProgressStore.MIN_POSITION_MS) {
@@ -982,15 +892,20 @@ public final class PlayerActivity extends Activity {
 
     @Override protected void onStart() {
         super.onStart();
+        activityStarted = true;
         if (audioMovedToBackground) {
-            stopService(new Intent(this, AudioPlaybackService.class));
+            long position = AudioPlaybackService.takePosition(this, historyItem, resumePosition);
             if (player != null) {
-                player.seekTo(StateStore.position(this));
+                player.seekTo(position);
                 player.play();
+            } else {
+                resumePosition = position;
             }
             audioMovedToBackground = false;
         }
+        if (player == null && streamUrl != null) startPlayerSafely();
         if (player != null && !player.isPlaying()) showControls();
+        restartProgressTicker();
     }
 
     @Override protected void onResume() {
@@ -1005,6 +920,12 @@ public final class PlayerActivity extends Activity {
 
     @Override protected void onStop() {
         saveProgress();
+        activityStarted = false;
+        ui.removeCallbacks(progressTicker);
+        ui.removeCallbacks(hideControls);
+        ui.removeCallbacks(beginHeldSeek);
+        ui.removeCallbacks(openMenuFromLongCenter);
+        heldSeekKey = KeyEvent.KEYCODE_UNKNOWN;
         if (player != null) {
             boolean keepAudio = audioOnly && !DeviceType.isTelevision(this)
                     && player.isPlaying() && streamUrl != null && !leavingPlayer && !isFinishing();
@@ -1018,6 +939,7 @@ public final class PlayerActivity extends Activity {
         Intent background = new Intent(this, AudioPlaybackService.class)
                 .setAction(AudioPlaybackService.ACTION_PLAY);
         if (getIntent().getExtras() != null) background.putExtras(getIntent().getExtras());
+        background.putExtra("background_request", AudioPlaybackService.prepareStart(this));
         background.putExtra("stream_url", streamUrl);
         background.putExtra("stream_mime_type", streamMimeType);
         background.putExtra("resume_position", player == null ? 0L : player.getCurrentPosition());
@@ -1042,9 +964,14 @@ public final class PlayerActivity extends Activity {
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         if (!intent.getBooleanExtra("resume_background_audio", false)) return;
-        stopService(new Intent(this, AudioPlaybackService.class));
+        if (!java.util.Objects.equals(intent.getStringExtra("page_url"), videoIdentityUrl)) {
+            setIntent(intent);
+            recreate();
+            return;
+        }
+        long position = AudioPlaybackService.takePosition(this, historyItem, resumePosition);
         if (player != null) {
-            player.seekTo(StateStore.position(this));
+            player.seekTo(position);
             player.play();
             showControls();
         }
@@ -1052,13 +979,12 @@ public final class PlayerActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        destroyed = true;
+        activityStarted = false;
         resolver.shutdownNow();
         ui.removeCallbacksAndMessages(null);
         releasePlayer();
         if (videoSurface != null) videoSurface.release();
-        if (Thread.getDefaultUncaughtExceptionHandler() != previousCrashHandler) {
-            Thread.setDefaultUncaughtExceptionHandler(previousCrashHandler);
-        }
         super.onDestroy();
     }
 

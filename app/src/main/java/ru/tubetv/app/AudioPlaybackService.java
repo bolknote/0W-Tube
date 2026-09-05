@@ -14,33 +14,47 @@ import android.os.Looper;
 import androidx.annotation.Nullable;
 import androidx.annotation.OptIn;
 import androidx.core.app.NotificationCompat;
-import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.C;
-import androidx.media3.common.MediaItem;
-import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.datasource.DefaultHttpDataSource;
-import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
-import androidx.media3.exoplayer.mediacodec.MediaCodecInfo;
-import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
-
-import java.net.CookieHandler;
-import java.net.CookieManager;
-import java.net.CookiePolicy;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 public final class AudioPlaybackService extends Service {
     static final String ACTION_PLAY = "ru.tubetv.app.PLAY_BACKGROUND_AUDIO";
     private static final String ACTION_STOP = "ru.tubetv.app.STOP_BACKGROUND_AUDIO";
     private static final String CHANNEL_ID = "background_audio";
     private static final int NOTIFICATION_ID = 5801;
+
+    // Activity and Service callbacks run on the main thread. Invalidate queued starts
+    // when the screen takes playback back, before Android delivers stopService().
+    private static long requestGeneration;
+    private static AudioPlaybackService active;
+
+    static long prepareStart(android.content.Context context) {
+        stopPlayback(context);
+        return requestGeneration;
+    }
+
+    static void stopPlayback(android.content.Context context) {
+        requestGeneration++;
+        if (active != null) active.releasePlayer();
+        context.stopService(new Intent(context, AudioPlaybackService.class));
+    }
+
+    static long takePosition(android.content.Context context, VideoItem item, long fallback) {
+        long position = fallback;
+        if (active != null && active.player != null
+                && java.util.Objects.equals(active.source, item.source)
+                && java.util.Objects.equals(active.pageUrl, item.pageUrl)) {
+            position = active.player.getCurrentPosition();
+        } else {
+            VideoItem saved = StateStore.playerItem(context);
+            if (saved != null && saved.stableKey().equals(item.stableKey())) position = StateStore.position(context);
+        }
+        stopPlayback(context);
+        return Math.max(0L, position);
+    }
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final Runnable progressTicker = new Runnable() {
@@ -60,6 +74,7 @@ public final class AudioPlaybackService extends Service {
 
     @Override public void onCreate() {
         super.onCreate();
+        active = this;
         createNotificationChannel();
     }
 
@@ -72,11 +87,16 @@ public final class AudioPlaybackService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
+        if (intent.getLongExtra("background_request", -1L) != requestGeneration) {
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
         String streamUrl = intent.getStringExtra("stream_url");
         if (streamUrl == null || streamUrl.isEmpty()) {
             stopSelf();
             return START_NOT_STICKY;
         }
+        releasePlayer();
         source = intent.getStringExtra("source");
         pageUrl = intent.getStringExtra("page_url");
         knownDuration = Math.max(0L, intent.getLongExtra("duration_ms", 0L));
@@ -94,84 +114,27 @@ public final class AudioPlaybackService extends Service {
                         Math.max(0, intent.getIntExtra("max_height", 0)));
         historyRecordedThisSession = WatchHistoryStore.contains(this, historyItem);
         startForeground(NOTIFICATION_ID, buildNotification(intent));
-        startPlayer(streamUrl, intent.getStringExtra("stream_mime_type"),
-                Math.max(0L, intent.getLongExtra("resume_position", 0L)),
-                intent.getFloatExtra("playback_speed", 1f));
+        try {
+            startPlayer(streamUrl, intent.getStringExtra("stream_mime_type"),
+                    Math.max(0L, intent.getLongExtra("resume_position", 0L)),
+                    intent.getFloatExtra("playback_speed", 1f));
+        } catch (RuntimeException error) {
+            CrashLog.save(this, error);
+            stopSelf();
+        }
         return START_NOT_STICKY;
     }
 
     @OptIn(markerClass = UnstableApi.class)
     private void startPlayer(String streamUrl, String streamMimeType, long position, float speed) {
-        releasePlayer();
-        Map<String, String> headers = new HashMap<>();
-        boolean vk = "VK VIDEO".equals(source);
-        boolean dzen = "ДЗЕН".equals(source);
-        boolean ok = "OK".equals(source);
-        boolean peerTube = PeerTubeClient.SOURCE.equals(source);
-        if (dzen) {
-            CookieHandler.setDefault(new CookieManager(null, CookiePolicy.ACCEPT_ALL));
-        } else {
-            if (ok) CookieHandler.setDefault(new CookieManager(null, CookiePolicy.ACCEPT_NONE));
-            headers.put("Referer", vk ? "https://vkvideo.ru/"
-                    : ok ? OkClient.REFERER
-                    : peerTube ? pageUrl : "https://rutube.ru/");
-        }
-        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
-                .setUserAgent(dzen ? DzenClient.USER_AGENT : vk
-                        ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/150 Safari/537.36"
-                        : ok ? OkClient.USER_AGENT
-                        : "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36")
-                .setConnectTimeoutMs(8_000)
-                .setReadTimeoutMs(10_000)
-                .setAllowCrossProtocolRedirects(true)
-                .setDefaultRequestProperties(headers);
-        DeviceCapabilities capabilities = DeviceCapabilities.get();
-        MediaCodecSelector hardwareSelector = (mimeType, secure, tunneling) -> {
-            List<MediaCodecInfo> available = MediaCodecSelector.DEFAULT
-                    .getDecoderInfos(mimeType, secure, tunneling);
-            if (!mimeType.startsWith("audio/") && !mimeType.startsWith("video/")) return available;
-            boolean video = mimeType.startsWith("video/");
-            List<MediaCodecInfo> hardware = new ArrayList<>();
-            for (MediaCodecInfo codec : available) {
-                if (codec.hardwareAccelerated && !codec.softwareOnly) hardware.add(codec);
-            }
-            if (video) {
-                return capabilities.supportsHardware(mimeType) ? hardware : new ArrayList<>();
-            }
-            List<MediaCodecInfo> ordered = new ArrayList<>(hardware);
-            for (MediaCodecInfo codec : available) {
-                if (!hardware.contains(codec)) ordered.add(codec);
-            }
-            return ordered;
-        };
-        player = new ExoPlayer.Builder(this)
-                .setRenderersFactory(new DefaultRenderersFactory(this)
-                        .setMediaCodecSelector(hardwareSelector)
-                        .setEnableDecoderFallback(true))
-                .setMediaSourceFactory(new DefaultMediaSourceFactory(http))
-                .build();
-        String[] preferredAudio = capabilities.preferredAudioMimes(true);
-        androidx.media3.common.TrackSelectionParameters.Builder tracks =
-                player.getTrackSelectionParameters().buildUpon()
-                        .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
-                        .setForceLowestBitrate(true);
-        if (preferredAudio.length > 0) tracks.setPreferredAudioMimeTypes(preferredAudio);
-        player.setTrackSelectionParameters(tracks.build());
-        player.setAudioAttributes(new AudioAttributes.Builder()
-                .setUsage(C.USAGE_MEDIA)
-                .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                .build(), true);
+        player = PlaybackEngineFactory.create(this, source, pageUrl, trafficMode, targetHeight, true);
         player.addListener(new Player.Listener() {
             @Override public void onPlayerError(PlaybackException error) { stopSelf(); }
             @Override public void onPlaybackStateChanged(int state) {
                 if (state == Player.STATE_ENDED) stopSelf();
             }
         });
-        MediaItem.Builder item = new MediaItem.Builder().setUri(streamUrl);
-        if (streamMimeType != null) item.setMimeType(streamMimeType);
-        else if (streamUrl.contains(".m3u8")) item.setMimeType(MimeTypes.APPLICATION_M3U8);
-        else if (streamUrl.contains(".mpd")) item.setMimeType(MimeTypes.APPLICATION_MPD);
-        player.setMediaItem(item.build());
+        player.setMediaItem(PlaybackEngineFactory.mediaItem(streamUrl, streamMimeType));
         if (position > 0) player.seekTo(position);
         player.setPlaybackSpeed(speed);
         player.prepare();
@@ -220,7 +183,7 @@ public final class AudioPlaybackService extends Service {
         long duration = player.getDuration();
         if (duration <= 0 || duration == C.TIME_UNSET) duration = knownDuration;
         if (duration > 0) knownDuration = duration;
-        StateStore.savePlayerPosition(this, position);
+        StateStore.savePlayerPosition(this, source, pageUrl, position);
         WatchProgressStore.save(this, source, pageUrl, position, Math.max(0L, duration));
         if (!historyRecordedThisSession && position >= WatchProgressStore.MIN_POSITION_MS) {
             WatchHistoryStore.record(this, historyItem.withDuration(duration),
@@ -239,6 +202,7 @@ public final class AudioPlaybackService extends Service {
 
     @Override public void onDestroy() {
         releasePlayer();
+        if (active == this) active = null;
         super.onDestroy();
     }
 

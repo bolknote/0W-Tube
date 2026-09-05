@@ -1,0 +1,33 @@
+name: Check application
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Test, lint, and build both applications
+        run: ./gradlew :app:testDebugUnitTest :app:lintRelease :codecprobe:lintRelease assembleRelease --no-daemon
+      - name: Test search prototype
+        run: python3 -m unittest research.test_peertube_search_prototype
+      - name: Preserve reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-reports
+          path: |
+            app/build/reports/
+            codecprobe/build/reports/
+          if-no-files-found: warn

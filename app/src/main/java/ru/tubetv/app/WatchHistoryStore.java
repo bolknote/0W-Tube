@@ -16,7 +16,7 @@ final class WatchHistoryStore {
     private static final String ORDER = "order";
     private static final String LEGACY_MIGRATED = "legacy_migrated";
     private static final String ENTRY_PREFIX = "video_";
-    private static final int MAX_ENTRIES = 1000;
+    private static final int MAX_ENTRIES = WatchProgressStore.MAX_ENTRIES;
 
     static synchronized void record(Context context, VideoItem item,
                                     boolean trafficMode, int targetHeight,
@@ -46,7 +46,9 @@ final class WatchHistoryStore {
             SharedPreferences.Editor editor = preferences.edit()
                     .putString(ENTRY_PREFIX + key, value.toString());
             while (order.size() > MAX_ENTRIES) {
-                editor.remove(ENTRY_PREFIX + order.remove(order.size() - 1));
+                String removed = order.remove(order.size() - 1);
+                editor.remove(ENTRY_PREFIX + removed);
+                WatchProgressStore.remove(context, removed);
             }
             editor.putString(ORDER, join(order)).apply();
         } catch (Exception ignored) {
@@ -87,8 +89,6 @@ final class WatchHistoryStore {
                         .withQuality(Math.max(0, value.optInt("w", 0)),
                                 Math.max(0, value.optInt("h", 0)));
                 if (item.playUrl.isEmpty() || item.pageUrl.isEmpty()) continue;
-                WatchProgressStore.Progress progress = WatchProgressStore.get(context, item);
-                if (progress.positionMs < WatchProgressStore.MIN_POSITION_MS) continue;
                 result.add(new Entry(item,
                         value.optBoolean("m", false),
                         Math.max(0, value.optInt("q", 0)),

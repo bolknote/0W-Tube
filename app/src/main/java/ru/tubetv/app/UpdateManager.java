@@ -4,13 +4,11 @@ import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.os.SystemClock;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -20,7 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class UpdateManager {
     private static final String LATEST_URL =
             "https://github.com/bolknote/0W-Tube/releases/latest";
-    private static final String USER_AGENT = "0W-Tube/0.5.14 AndroidTV";
+    private static final String USER_AGENT = "0W-Tube/" + BuildConfig.VERSION_NAME + " Android";
     private static final int TIMEOUT_MS = 10_000;
     private static final long CHECK_INTERVAL_MS = 60_000L;
     private static final long MAX_APK_SIZE = 150L * 1024L * 1024L;
@@ -71,9 +69,14 @@ final class UpdateManager {
                 latest.setConnectTimeout(TIMEOUT_MS);
                 latest.setReadTimeout(TIMEOUT_MS);
                 latest.setRequestProperty("User-Agent", USER_AGENT);
-                int code = latest.getResponseCode();
-                String location = latest.getHeaderField("Location");
-                latest.disconnect();
+                int code;
+                String location;
+                try {
+                    code = latest.getResponseCode();
+                    location = latest.getHeaderField("Location");
+                } finally {
+                    latest.disconnect();
+                }
                 if (code < 300 || code >= 400 || location == null) return;
                 int tag = location.indexOf("/releases/tag/");
                 if (tag < 0) return;
@@ -120,11 +123,11 @@ final class UpdateManager {
                 HttpURLConnection connection = open(release.apkUrl);
                 MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
                 long total = release.size > 0 ? release.size : connection.getContentLength();
-                if (total > MAX_APK_SIZE) throw new Exception("APK обновления слишком большой");
                 long loaded = 0;
                 int reported = -1;
                 try (InputStream input = connection.getInputStream();
                      FileOutputStream output = new FileOutputStream(partial)) {
+                    if (total > MAX_APK_SIZE) throw new Exception("APK обновления слишком большой");
                     byte[] buffer = new byte[32 * 1024];
                     int count;
                     while ((count = input.read(buffer)) != -1) {
@@ -204,15 +207,8 @@ final class UpdateManager {
 
     private static String readText(String address, int limit) throws Exception {
         HttpURLConnection connection = open(address);
-        try (InputStream input = connection.getInputStream()) {
-            ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(limit, 64 * 1024));
-            byte[] buffer = new byte[8192];
-            int count;
-            while ((count = input.read(buffer)) != -1) {
-                if (output.size() + count > limit) throw new Exception("Слишком большой ответ сервера обновлений");
-                output.write(buffer, 0, count);
-            }
-            return output.toString(StandardCharsets.UTF_8.name());
+        try {
+            return BoundedHttpReader.readText(connection.getInputStream(), limit);
         } finally {
             connection.disconnect();
         }
@@ -225,12 +221,14 @@ final class UpdateManager {
         connection.setReadTimeout(TIMEOUT_MS);
         connection.setRequestProperty("Accept", "application/octet-stream,text/plain,*/*");
         connection.setRequestProperty("User-Agent", USER_AGENT);
-        int code = connection.getResponseCode();
-        if (code < 200 || code >= 300) {
+        try {
+            int code = connection.getResponseCode();
+            if (code < 200 || code >= 300) throw new Exception("GitHub: HTTP " + code);
+            return connection;
+        } catch (Exception error) {
             connection.disconnect();
-            throw new Exception("GitHub: HTTP " + code);
+            throw error;
         }
-        return connection;
     }
 
     private UpdateManager() { }

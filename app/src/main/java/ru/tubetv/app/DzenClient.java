@@ -5,8 +5,6 @@ import android.net.Uri;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -158,6 +156,7 @@ final class DzenClient {
 
     private static JSONObject getJsonPage(String address) throws Exception {
         for (int attempt = 0; attempt < 3; attempt++) {
+            BoundedHttpReader.checkInterrupted();
             HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
             connection.setInstanceFollowRedirects(false);
             connection.setConnectTimeout(TIMEOUT_MS);
@@ -171,7 +170,8 @@ final class DzenClient {
                 rememberCookies(connection);
                 if (code >= 300 && code < 400) continue;
                 if (code < 200 || code >= 300) throw new Exception("Дзен: HTTP " + code);
-                return new JSONObject(read(connection.getInputStream(), 128 * 1024));
+                return new JSONObject(BoundedHttpReader.readText(connection.getInputStream(),
+                        BoundedHttpReader.JSON_LIMIT));
             } finally {
                 connection.disconnect();
             }
@@ -184,6 +184,7 @@ final class DzenClient {
         // redirects only set anonymous cookies; repeating the original URL is enough
         // and avoids loading either SSO web page or executing JavaScript.
         for (int attempt = 0; attempt < 4; attempt++) {
+            BoundedHttpReader.checkInterrupted();
             HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
             connection.setInstanceFollowRedirects(false);
             connection.setConnectTimeout(TIMEOUT_MS);
@@ -197,7 +198,7 @@ final class DzenClient {
                 rememberCookies(connection);
                 if (code >= 300 && code < 400) continue;
                 if (code < 200 || code >= 300) throw new Exception("Дзен: HTTP " + code);
-                String body = read(connection.getInputStream(), 256 * 1024);
+                String body = BoundedHttpReader.readText(connection.getInputStream(), BoundedHttpReader.PAGE_LIMIT);
                 if (body.contains("data-card-type=\"card-video\"")
                         || body.contains("\"videoMetaResponse\"")) return body;
                 // Cookies can expire between requests; retry the original page once.
@@ -207,18 +208,6 @@ final class DzenClient {
             }
         }
         throw new Exception("Дзен не создал анонимную сессию");
-    }
-
-    private static String read(InputStream input, int initialSize) throws Exception {
-        ByteArrayOutputStream output = new ByteArrayOutputStream(initialSize);
-        byte[] buffer = new byte[16 * 1024];
-        int read;
-        while ((read = input.read(buffer)) != -1) {
-            if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
-            output.write(buffer, 0, read);
-        }
-        input.close();
-        return output.toString(StandardCharsets.UTF_8.name());
     }
 
     private static List<VideoItem> parseCards(String html) {

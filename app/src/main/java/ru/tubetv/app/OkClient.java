@@ -3,8 +3,6 @@ package ru.tubetv.app;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -96,6 +94,7 @@ final class OkClient {
             String html = get("https://ok.ru/videoembed/" + id, REFERER, MAX_PLAYER_BYTES);
             return parseDesktopPlayer(id, html);
         } catch (Exception error) {
+            BoundedHttpReader.checkInterrupted();
             desktopError = error;
         }
 
@@ -374,6 +373,7 @@ final class OkClient {
     }
 
     private static String get(String address, String referer, int limit) throws Exception {
+        BoundedHttpReader.checkInterrupted();
         HttpURLConnection connection = configure(
                 (HttpURLConnection) new URL(address).openConnection(), referer);
         try {
@@ -386,6 +386,7 @@ final class OkClient {
     }
 
     private static String post(String address, String body, String referer, int limit) throws Exception {
+        BoundedHttpReader.checkInterrupted();
         HttpURLConnection connection = configure(
                 (HttpURLConnection) new URL(address).openConnection(), referer);
         connection.setRequestMethod("POST");
@@ -419,22 +420,7 @@ final class OkClient {
     }
 
     private static String read(HttpURLConnection connection, int limit) throws Exception {
-        InputStream input = connection.getInputStream();
-        ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(limit, 128 * 1024));
-        byte[] buffer = new byte[8192];
-        int total = 0;
-        try {
-            int count;
-            while ((count = input.read(buffer)) != -1) {
-                if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
-                total += count;
-                if (total > limit) throw new Exception("Ответ OK слишком большой");
-                output.write(buffer, 0, count);
-            }
-        } finally {
-            input.close();
-        }
-        return output.toString(StandardCharsets.UTF_8.name());
+        return BoundedHttpReader.readText(connection.getInputStream(), limit);
     }
 
     private static String encode(String value) throws Exception {
