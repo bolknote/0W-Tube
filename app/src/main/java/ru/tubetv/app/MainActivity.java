@@ -776,14 +776,9 @@ public final class MainActivity extends Activity {
                 return true;
             }
             if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                boolean simpleOpen = !historyMode
-                        && keyCode == KeyEvent.KEYCODE_DPAD_DOWN
-                        && event.getRepeatCount() == 0
-                        && (grid == null || !grid.hasFocus());
                 boolean longOpen = !historyMode
                         && keyCode == KeyEvent.KEYCODE_DPAD_DOWN
-                        && event.getRepeatCount() > 0
-                        && grid != null && grid.hasFocus();
+                        && event.getRepeatCount() > 0;
                 int selected = grid == null ? -1 : grid.getSelectedItemPosition();
                 boolean ceilingClose = historyMode
                         && keyCode == KeyEvent.KEYCODE_DPAD_UP
@@ -792,7 +787,7 @@ public final class MainActivity extends Activity {
                 boolean longClose = historyMode
                         && keyCode == KeyEvent.KEYCODE_DPAD_UP
                         && event.getRepeatCount() > 0;
-                if (simpleOpen || longOpen || ceilingClose || longClose) {
+                if (longOpen || ceilingClose || longClose) {
                     modeSwitchHeldKey = keyCode;
                     if (historyMode) showSearch(true); else showHistory(true);
                     return true;
