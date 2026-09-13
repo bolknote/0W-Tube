@@ -14,8 +14,8 @@ android {
         applicationId 'ru.tubetv.app'
         minSdk 23
         targetSdk 35
-        versionCode 31
-        versionName '0.7.3'
+        versionCode 32
+        versionName '0.7.4'
         resourceConfigurations += ['ru']
     }
 
