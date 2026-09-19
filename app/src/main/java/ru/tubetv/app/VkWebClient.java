@@ -37,8 +37,7 @@ final class VkWebClient {
                 + "&client_id=" + CLIENT_ID;
         String body = "access_token=" + Uri.encode(getAnonymousToken())
                 + "&videos=" + Uri.encode(videoId)
-                + "&video_fields=" + Uri.encode("added,episodes,files,image,is_favorite,"
-                + "subtitles,timeline_thumbs,trailer,volume_multiplier");
+                + "&video_fields=" + Uri.encode("files");
         JSONObject root = postJson(address, body);
         JSONObject error = root.optJSONObject("error");
         if (error != null) {

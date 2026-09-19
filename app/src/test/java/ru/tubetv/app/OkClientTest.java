@@ -76,6 +76,28 @@ public final class OkClientTest {
     }
 
     @Test
+    public void parsesInlinePlayerMetadataObject() throws Exception {
+        JSONObject metadata = new JSONObject()
+                .put("provider", "UPLOADED_ODKL")
+                .put("movie", new JSONObject()
+                        .put("id", "17367842097827")
+                        .put("title", "Объектные метаданные"))
+                .put("hlsManifestUrl", "https://vd123.mycdn.me/master.m3u8");
+        JSONObject player = new JSONObject().put("flashvars",
+                new JSONObject().put("metadata", metadata));
+        String html = "<div data-options=\"" + htmlAttribute(player.toString()) + "\"></div>";
+
+        OkClient.PlayerData data = OkClient.parseDesktopPlayer("17367842097827", html);
+
+        assertEquals("17367842097827", data.id);
+        assertNotNull(data.metadata);
+        assertEquals("Объектные метаданные",
+                data.metadata.getJSONObject("movie").getString("title"));
+        assertNull(data.externalUrl);
+        assertNull(data.mobileUrl);
+    }
+
+    @Test
     public void parsesExternalAndMobileFallbackPlayers() throws Exception {
         JSONObject external = new JSONObject()
                 .put("isExternalPlayer", true)
