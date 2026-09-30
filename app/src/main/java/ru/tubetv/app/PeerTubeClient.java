@@ -3,11 +3,10 @@ package ru.tubetv.app;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.InterruptedIOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -20,13 +19,8 @@ import java.util.Set;
 /** Low-priority search and playback support for public videos in the PeerTube federation. */
 final class PeerTubeClient {
     static final String SOURCE = "PEERTUBE";
-    private static final String SEARCH_ENDPOINT =
-            "https://sepiasearch.org/api/v1/search/videos";
     private static final String USER_AGENT = "0W-Tube/" + BuildConfig.VERSION_NAME + " PeerTube";
-    private static final int MIN_DURATION_SECONDS = 40 * 60;
-    private static final int SEARCH_LIMIT = 20;
-    private static final int RESULT_LIMIT = 3;
-    private static final int INSPECTION_LIMIT = 3;
+    private static final int MIN_DURATION_SECONDS = PeerTubeSearch.MIN_DURATION_SECONDS;
     private static final int TIMEOUT_MS = 8_000;
     private static final int MAX_JSON_BYTES = 1024 * 1024;
     private static final int MAX_MANIFEST_BYTES = 64 * 1024;
@@ -48,22 +42,45 @@ final class PeerTubeClient {
             {"ac-3", "alac", "ec-3", "flac", "mp4a", "opus", "vorbis"};
     private static final Map<Character, String> TRANSLIT = transliterationTable();
     private static final ExpiringCache<String, Media> CACHE = new ExpiringCache<>(MAX_CACHE_ENTRIES, CACHE_MS);
+    private static final TextReader HTTP = PeerTubeClient::getText;
+
+    interface TextReader { String read(String address, int limit, long deadline) throws Exception; }
 
     static List<VideoItem> search(String query, int minWidth, int thumbnailWidth) throws Exception {
+        return search(query, minWidth, thumbnailWidth, HTTP);
+    }
+
+    static List<VideoItem> search(String query, int minWidth, int thumbnailWidth,
+                                  TextReader reader) throws Exception {
         String normalized = queryForTitle(query);
         if (normalized.isEmpty()) return new ArrayList<>();
-
-        LinkedHashMap<String, Candidate> candidates = new LinkedHashMap<>();
-        addCandidates(candidates, searchOnce(normalized));
-        List<VideoItem> result = inspectAccepted(query, candidates, minWidth, thumbnailWidth);
-
+        List<String> variants = new ArrayList<>();
+        variants.add(normalized);
         String latin = transliterate(normalized);
-        if (result.isEmpty() && !latin.isEmpty() && !latin.equals(normalized)
-                && !Thread.currentThread().isInterrupted()) {
-            addCandidates(candidates, searchOnce(latin));
-            result = inspectAccepted(query, candidates, minWidth, thumbnailWidth);
+        if (!latin.isEmpty() && !latin.equals(normalized)) variants.add(latin);
+        return PeerTubeSearch.search(query, variants,
+                (address, deadline) -> new JSONObject(reader.read(address, MAX_JSON_BYTES, deadline)),
+                (candidate, deadline) -> inspectCandidate(candidate, minWidth, thumbnailWidth, reader, deadline));
+    }
+
+    static VideoItem inspectCandidate(PeerTubeSearch.Candidate candidate, int minWidth,
+                                       int thumbnailWidth, TextReader reader, long deadline) throws Exception {
+        Media media = loadMedia(candidate.apiUrl, false, reader, deadline);
+        if (media.streamUrl == null || media.maxWidth < minWidth) return null;
+        if (media.durationSeconds > 0 && media.durationSeconds < MIN_DURATION_SECONDS) return null;
+        String thumbnail = media.thumbnailFor(thumbnailWidth);
+        if (thumbnail == null) thumbnail = candidate.thumbnail;
+        long duration = media.durationSeconds > 0
+                ? media.durationSeconds * 1000L : candidate.durationSeconds * 1000L;
+        String apiUrl = candidate.apiUrl;
+        String pageUrl = candidate.pageUrl;
+        if (media.uuid != null) {
+            String base = origin(apiUrl);
+            apiUrl = base + "api/v1/videos/" + media.uuid;
+            pageUrl = base + "videos/watch/" + media.uuid;
         }
-        return result;
+        return new VideoItem(SOURCE, candidate.title, "", thumbnail,
+                apiUrl, pageUrl, duration).withQuality(media.maxWidth, media.maxHeight);
     }
 
     static boolean isApiUrl(String value) {
@@ -77,7 +94,12 @@ final class PeerTubeClient {
     }
 
     static PlaybackInfo resolve(String apiUrl, boolean audioOnly, boolean fresh) throws Exception {
-        Media media = loadMedia(apiUrl, fresh);
+        return resolve(apiUrl, audioOnly, fresh, HTTP);
+    }
+
+    static PlaybackInfo resolve(String apiUrl, boolean audioOnly, boolean fresh,
+                                  TextReader reader) throws Exception {
+        Media media = loadMedia(apiUrl, fresh, reader, Long.MAX_VALUE);
         if (audioOnly) {
             if (media.audioUrl == null) {
                 throw new Exception("PeerTube не отдал отдельный или низкокачественный аудиопоток");
@@ -88,58 +110,6 @@ final class PeerTubeClient {
         if (media.streamUrl == null) throw new Exception("PeerTube не отдал воспроизводимый поток");
         return new PlaybackInfo(media.streamUrl, media.streamMimeType,
                 media.maxWidth, media.maxHeight);
-    }
-
-    private static List<VideoItem> inspectAccepted(String query,
-                                                   LinkedHashMap<String, Candidate> candidates,
-                                                   int minWidth, int thumbnailWidth) {
-        List<RankedCandidate> accepted = new ArrayList<>();
-        for (Candidate candidate : candidates.values()) {
-            Evaluation evaluation = evaluate(query, candidate.title, candidate.durationSeconds);
-            if (evaluation.accepted) accepted.add(new RankedCandidate(candidate, evaluation.score));
-        }
-        Collections.sort(accepted, (left, right) -> Integer.compare(right.score, left.score));
-
-        List<VideoItem> result = new ArrayList<>();
-        int inspected = 0;
-        for (RankedCandidate ranked : accepted) {
-            if (Thread.currentThread().isInterrupted() || inspected++ >= INSPECTION_LIMIT) break;
-            Candidate candidate = ranked.candidate;
-            try {
-                Media media = loadMedia(candidate.apiUrl, false);
-                if (media.streamUrl == null || media.maxWidth < minWidth) continue;
-                String thumbnail = media.thumbnailFor(thumbnailWidth);
-                if (thumbnail == null) thumbnail = candidate.thumbnail;
-                long duration = media.durationSeconds > 0
-                        ? media.durationSeconds * 1000L : candidate.durationSeconds * 1000L;
-                result.add(new VideoItem(SOURCE, candidate.title, "", thumbnail,
-                        candidate.apiUrl, candidate.pageUrl, duration)
-                        .withQuality(media.maxWidth, media.maxHeight));
-                if (result.size() >= RESULT_LIMIT) break;
-            } catch (Exception ignored) {
-                // Federated indexes routinely contain stopped or unreachable origins.
-            }
-        }
-        return result;
-    }
-
-    private static JSONArray searchOnce(String query) throws Exception {
-        String address = SEARCH_ENDPOINT
-                + "?search=" + encode(query)
-                + "&count=" + SEARCH_LIMIT
-                + "&start=0&nsfw=false&isLive=false&durationMin=" + MIN_DURATION_SECONDS;
-        return getJson(address, MAX_JSON_BYTES).optJSONArray("data");
-    }
-
-    private static void addCandidates(LinkedHashMap<String, Candidate> target, JSONArray values) {
-        if (values == null) return;
-        for (int i = 0; i < values.length(); i++) {
-            JSONObject item = values.optJSONObject(i);
-            Candidate candidate = Candidate.from(item);
-            if (candidate != null && !target.containsKey(candidate.pageUrl)) {
-                target.put(candidate.pageUrl, candidate);
-            }
-        }
     }
 
     static Evaluation evaluate(String query, String title, int durationSeconds) {
@@ -183,7 +153,9 @@ final class PeerTubeClient {
                     && isYear(titlePhrase.get(titlePhrase.size() - 1));
             return exact || yearSuffix ? Evaluation.accept(score) : Evaluation.reject(score);
         }
-        return contiguous && contiguousStart <= 1
+        boolean titleStart = contiguousStart == 0 || contiguousStart == 1
+                && QUERY_DECORATIONS.contains(titlePhrase.get(0));
+        return contiguous && titleStart
                 ? Evaluation.accept(score) : Evaluation.reject(score);
     }
 
@@ -246,12 +218,13 @@ final class PeerTubeClient {
         return previous[right.length()];
     }
 
-    private static Media loadMedia(String apiUrl, boolean fresh) throws Exception {
+    private static Media loadMedia(String apiUrl, boolean fresh, TextReader reader,
+                                    long deadline) throws Exception {
         if (!isApiUrl(apiUrl)) throw new Exception("Неверный адрес PeerTube");
-        Media cached = fresh ? null : CACHE.get(apiUrl);
+        Media cached = fresh || reader != HTTP ? null : CACHE.get(apiUrl);
         if (cached != null) return cached;
 
-        JSONObject metadata = getJson(apiUrl, MAX_JSON_BYTES);
+        JSONObject metadata = new JSONObject(reader.read(apiUrl, MAX_JSON_BYTES, deadline));
         String base = origin(apiUrl);
         List<Thumbnail> thumbnails = parseThumbnails(metadata, base);
         String bestDirectMuxed = null;
@@ -306,7 +279,7 @@ final class PeerTubeClient {
                 String candidateMaster = httpUrl(playlist.optString("playlistUrl"), base);
                 if (candidateMaster == null) continue;
                 try {
-                    String manifest = getText(candidateMaster, MAX_MANIFEST_BYTES);
+                    String manifest = reader.read(candidateMaster, MAX_MANIFEST_BYTES, deadline);
                     HlsInfo info = parseHls(candidateMaster, manifest);
                     if (!info.valid) continue;
                     if (masterUrl == null || info.maxWidth > (bestHls == null ? 0 : bestHls.maxWidth)) {
@@ -341,8 +314,12 @@ final class PeerTubeClient {
         }
 
         Media result = new Media(streamUrl, streamMime, audioUrl, audioMime,
-                maxWidth, maxHeight, metadata.optLong("duration"), thumbnails);
-        CACHE.put(apiUrl, result);
+                maxWidth, maxHeight, metadata.optLong("duration"), thumbnails,
+                PeerTubeSearch.canonicalUuid(metadata.optString("uuid")));
+        if (reader == HTTP) {
+            CACHE.put(apiUrl, result);
+            if (result.uuid != null) CACHE.put(base + "api/v1/videos/" + result.uuid, result);
+        }
         return result;
     }
 
@@ -459,24 +436,29 @@ final class PeerTubeClient {
         if (url != null && !values.containsKey(url)) values.put(url, new Thumbnail(url, 0, 0));
     }
 
-    private static JSONObject getJson(String address, int limit) throws Exception {
-        return new JSONObject(getText(address, limit));
-    }
-
-    private static String getText(String address, int limit) throws Exception {
+    private static String getText(String address, int limit, long deadline) throws Exception {
         BoundedHttpReader.checkInterrupted();
         HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
-        connection.setConnectTimeout(TIMEOUT_MS);
-        connection.setReadTimeout(TIMEOUT_MS);
+        connection.setConnectTimeout(requestTimeout(deadline));
+        connection.setReadTimeout(requestTimeout(deadline));
         connection.setRequestProperty("Accept", "application/json,application/vnd.apple.mpegurl,*/*");
         connection.setRequestProperty("User-Agent", USER_AGENT);
         try {
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("PeerTube: HTTP " + code);
+            connection.setReadTimeout(requestTimeout(deadline));
             return BoundedHttpReader.readText(connection.getInputStream(), limit);
         } finally {
             connection.disconnect();
         }
+    }
+
+    private static int requestTimeout(long deadline) throws InterruptedIOException {
+        BoundedHttpReader.checkInterrupted();
+        if (deadline == Long.MAX_VALUE) return TIMEOUT_MS;
+        long remaining = (deadline - System.nanoTime()) / 1_000_000L;
+        if (remaining <= 0) throw new InterruptedIOException("Время поиска PeerTube истекло");
+        return (int) Math.min(4_000, remaining);
     }
 
     private static String queryForTitle(String value) {
@@ -613,10 +595,6 @@ final class PeerTubeClient {
         }
     }
 
-    private static String encode(String value) throws Exception {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8.name());
-    }
-
     private static Set<String> setOf(String... values) {
         Set<String> result = new HashSet<>();
         Collections.addAll(result, values);
@@ -631,38 +609,6 @@ final class PeerTubeClient {
                 "sh", "shch", "", "y", "", "e", "yu", "ya"};
         for (int i = 0; i < source.length(); i++) result.put(source.charAt(i), replacements[i]);
         return result;
-    }
-
-    private static final class Candidate {
-        final String title;
-        final String pageUrl;
-        final String apiUrl;
-        final String thumbnail;
-        final int durationSeconds;
-
-        private Candidate(String title, String pageUrl, String apiUrl,
-                          String thumbnail, int durationSeconds) {
-            this.title = title;
-            this.pageUrl = pageUrl;
-            this.apiUrl = apiUrl;
-            this.thumbnail = thumbnail;
-            this.durationSeconds = durationSeconds;
-        }
-
-        static Candidate from(JSONObject item) {
-            if (item == null) return null;
-            String page = httpUrl(item.optString("url"), null);
-            String uuid = item.optString("uuid");
-            if (page == null || uuid.isEmpty()) return null;
-            try {
-                String api = origin(page) + "api/v1/videos/" + encode(uuid);
-                return new Candidate(item.optString("name", "Видео PeerTube"), page, api,
-                        httpUrl(item.optString("thumbnailUrl"), page),
-                        Math.max(0, item.optInt("duration")));
-            } catch (Exception ignored) {
-                return null;
-            }
-        }
     }
 
     static final class Evaluation {
@@ -687,16 +633,6 @@ final class PeerTubeClient {
         String separateAudioUrl;
         String lowestMuxedUrl;
         int lowestMuxedHeight = Integer.MAX_VALUE;
-    }
-
-    private static final class RankedCandidate {
-        final Candidate candidate;
-        final int score;
-
-        RankedCandidate(Candidate candidate, int score) {
-            this.candidate = candidate;
-            this.score = score;
-        }
     }
 
     private static final class FileSelection {
@@ -731,9 +667,10 @@ final class PeerTubeClient {
         final int maxHeight;
         final long durationSeconds;
         final List<Thumbnail> thumbnails;
+        final String uuid;
 
         Media(String streamUrl, String streamMimeType, String audioUrl, String audioMimeType,
-              int maxWidth, int maxHeight, long durationSeconds, List<Thumbnail> thumbnails) {
+              int maxWidth, int maxHeight, long durationSeconds, List<Thumbnail> thumbnails, String uuid) {
             this.streamUrl = streamUrl;
             this.streamMimeType = streamMimeType;
             this.audioUrl = audioUrl;
@@ -742,6 +679,7 @@ final class PeerTubeClient {
             this.maxHeight = maxHeight;
             this.durationSeconds = durationSeconds;
             this.thumbnails = thumbnails;
+            this.uuid = uuid;
         }
 
         String thumbnailFor(int targetWidth) {

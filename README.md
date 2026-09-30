@@ -79,7 +79,7 @@ Dzen search uses its public JSON search API, with a server-rendered HTML fallbac
 
 OK search reads the public anonymous video-search component. Playback follows the same public metadata flow as yt-dlp's Odnoklassniki extractor: inline player metadata first, then the metadata endpoint and mobile-page fallback. Native OK HLS, DASH, and direct streams are supported without an account; external providers are ignored unless the application already supports them.
 
-PeerTube search uses the global Sepia Search index as a low-priority backend. Results are conservatively filtered for a complete film title and long-form duration, then verified against the originating PeerTube server before a card is shown. Playback prefers a reachable HLS master playlist; traffic-saving audio mode prefers an explicit audio-only file or HLS audio rendition and uses a low-resolution muxed stream only as a fallback.
+PeerTube search combines the public Sepia Search and PeerSeek indexes as a low-priority backend, merging the original title and its Latin transliteration. Discovery requests go only to those search indexes; no fixed PeerTube-instance list or direct-instance search is used. Video origins are taken from index results and contacted only to verify metadata and resolve playback. Requests use a two-worker bounded pool and a 25-second total budget; stopped origins do not prevent checking the next candidates. Results are conservatively filtered for a complete film title and long-form duration, deduplicated by origin/video identity, then verified against the originating server before a card is shown. There is no application-owned index or persistent search cache. Playback prefers a reachable HLS master playlist; traffic-saving audio mode prefers an explicit audio-only file or HLS audio rendition and uses a low-resolution muxed stream only as a fallback.
 
 Private, deleted, region-restricted, DRM-protected, age-gated, or account-only videos may not be available. These public web interfaces can change independently of the application and may require future compatibility updates.
 
@@ -157,6 +157,7 @@ app/src/main/java/ru/tubetv/app/
   DzenClient.java            Anonymous Dzen search client
   OkClient.java              Anonymous OK search and player metadata client
   PeerTubeClient.java        Federated PeerTube search, filtering, and stream inspection
+  PeerTubeSearch.java        Bounded multi-index discovery
   VideoRanker.java           Fast local title-relevance ranking
   StreamResolver.java        Fresh stream resolution for every supported backend
   MediaCapabilities.java     Cached dimensions, without temporary stream URLs

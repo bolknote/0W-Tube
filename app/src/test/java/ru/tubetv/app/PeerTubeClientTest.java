@@ -14,6 +14,12 @@ public final class PeerTubeClientTest {
                 "Кин-дза-дза! (FullHD, комедия, 1986)",
                 7644);
         assertTrue(result.accepted);
+        assertTrue(PeerTubeClient.evaluate("Кин-дза-дза", "Фильм Кин-дза-дза 1986", 7644).accepted);
+    }
+
+    @Test
+    public void rejectsDocumentaryAboutTheTitleInsteadOfTheFilm() {
+        assertFalse(PeerTubeClient.evaluate("Андрей Рублев", "Загадка Андрея Рублёва", 2638).accepted);
     }
 
     @Test
@@ -71,6 +77,18 @@ public final class PeerTubeClientTest {
         assertTrue(info.valid);
         assertFalse(info.muxed);
         assertEquals("https://video.example/path/audio.m3u8", info.separateAudioUrl);
+    }
+
+    @Test
+    public void audioModeStillPrefersSeparateTrackAfterExpandedSearch() throws Exception {
+        PlaybackInfo audio = PeerTubeClient.resolve("https://video.example/api/v1/videos/test", true, true,
+                (address, limit, deadline) -> "{\"duration\":5400,\"files\":["
+                        + "{\"fileUrl\":\"/video.mp4\",\"width\":1280,\"height\":720,"
+                        + "\"hasVideo\":true,\"hasAudio\":true},"
+                        + "{\"fileUrl\":\"/audio.mp4\",\"resolution\":{\"id\":0},"
+                        + "\"hasVideo\":false,\"hasAudio\":true,\"size\":4096}]}");
+        assertEquals("https://video.example/audio.mp4", audio.streamUrl);
+        assertEquals("audio/mp4", audio.streamMimeType);
     }
 
     @Test
