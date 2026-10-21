@@ -40,13 +40,13 @@ public final class PeerTubeSearchBenchmark {
                 Snapshot snapshot = new Snapshot();
                 List<String> addresses = Collections.synchronizedList(new ArrayList<>());
                 // Empty responses enumerate the bounded fallback plan using the application itself.
-                PeerTubeClient.search(title, 0, 320, (address, bytes, deadline) -> {
+                PeerTubeClient.search(title, 0, 320, (address, bytes, deadline, headers) -> {
                     addresses.add(address);
                     return "{\"data\":[],\"videos\":[]}";
                 });
                 List<Future<?>> pending = new ArrayList<>();
                 for (String address : addresses) pending.add(downloads.submit(() -> {
-                    try { snapshot.read(address, 1024 * 1024, after(8_000)); }
+                    try { snapshot.read(address, 1024 * 1024, after(8_000), PeerTubeClient.apiHeaders()); }
                     catch (Exception ignored) { }
                 }));
                 for (Future<?> future : pending) future.get();
@@ -94,7 +94,8 @@ public final class PeerTubeSearchBenchmark {
                 + URLEncoder.encode(search, StandardCharsets.UTF_8)
                 + "&count=40&start=0&nsfw=false&isLive=false&durationMin=2400";
         try {
-            JSONArray values = new JSONObject(snapshot.read(address, 1024 * 1024, after(8_000)))
+            JSONArray values = new JSONObject(snapshot.read(address, 1024 * 1024, after(8_000),
+                            PeerTubeClient.apiHeaders()))
                     .optJSONArray("data");
             if (values != null) for (int i = 0; i < Math.min(20, values.length()); i++) {
                 PeerTubeSearch.Candidate candidate = PeerTubeSearch.Candidate.from(values.optJSONObject(i), false);
@@ -134,15 +135,17 @@ public final class PeerTubeSearchBenchmark {
         final Map<String, String> values = new ConcurrentHashMap<>();
         final Map<String, Exception> errors = new ConcurrentHashMap<>();
 
-        @Override public String read(String address, int limit, long deadline) throws Exception {
+        @Override public String read(String address, int limit, long deadline,
+                                      Map<String, String> headers) throws Exception {
             if (values.containsKey(address)) return values.get(address);
             if (errors.containsKey(address)) throw errors.get(address);
             HttpURLConnection connection = (HttpURLConnection) URI.create(address).toURL().openConnection();
             int timeout = (int) Math.min(4_000, Math.max(1, (deadline - System.nanoTime()) / 1_000_000));
             connection.setConnectTimeout(timeout);
             connection.setReadTimeout(timeout);
-            connection.setRequestProperty("User-Agent", "0W-Tube PeerTube search benchmark/2");
-            connection.setRequestProperty("Accept", "application/json,application/vnd.apple.mpegurl,*/*");
+            for (Map.Entry<String, String> header : headers.entrySet()) {
+                connection.setRequestProperty(header.getKey(), header.getValue());
+            }
             try {
                 if (connection.getResponseCode() != 200) throw new Exception("HTTP " + connection.getResponseCode());
                 String value = BoundedHttpReader.readText(connection.getInputStream(), limit);

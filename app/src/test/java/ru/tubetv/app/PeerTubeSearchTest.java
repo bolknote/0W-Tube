@@ -78,7 +78,7 @@ public final class PeerTubeSearchTest {
     public void mergesRussianAndLatinHitsEvenAfterFindingTheRussianFilm() throws Exception {
         List<String> queries = Collections.synchronizedList(new ArrayList<>());
         List<VideoItem> result = PeerTubeClient.search("Кин-дза-дза", 0, 300,
-                (address, limit, deadline) -> {
+                (address, limit, deadline, headers) -> {
                     assertTrue(deadline > System.nanoTime());
                     if (address.contains("/api/v1/videos/")) return playable();
                     String query = query(address);
@@ -99,7 +99,7 @@ public final class PeerTubeSearchTest {
     public void oneBrokenIndexDoesNotDiscardPeerSeekResultsOrCauseDuplicateInspections() throws Exception {
         List<String> inspected = Collections.synchronizedList(new ArrayList<>());
         List<VideoItem> result = PeerTubeClient.search("Солярис", 0, 300,
-                (address, limit, deadline) -> {
+                (address, limit, deadline, headers) -> {
                     if (address.contains("/api/v1/videos/")) {
                         inspected.add(address);
                         return playable();
@@ -115,7 +115,7 @@ public final class PeerTubeSearchTest {
     @Test
     public void originUuidDeduplicatesShortLinksWithFullUuidLinks() throws Exception {
         List<VideoItem> result = PeerTubeClient.search("Солярис", 0, 300,
-                (address, limit, deadline) -> {
+                (address, limit, deadline, headers) -> {
                     if (address.contains("/api/v1/videos/")) {
                         return new JSONObject(playable()).put("uuid", UUID).toString();
                     }
@@ -132,7 +132,7 @@ public final class PeerTubeSearchTest {
     public void discoveryOnlyRequestsTheTwoSearchIndexesEvenWhenNoFilmsAreFound() throws Exception {
         List<String> requested = Collections.synchronizedList(new ArrayList<>());
         List<VideoItem> result = PeerTubeClient.search("Отец солдата", 0, 300,
-                (address, limit, deadline) -> {
+                (address, limit, deadline, headers) -> {
                     requested.add(address);
                     return response(address.contains("peerseek"));
                 });
@@ -154,7 +154,7 @@ public final class PeerTubeSearchTest {
     public void triesTheFourthCandidateAfterThreeDeadOrigins() throws Exception {
         List<String> inspected = Collections.synchronizedList(new ArrayList<>());
         List<VideoItem> result = PeerTubeClient.search("Солярис", 0, 300,
-                (address, limit, deadline) -> {
+                (address, limit, deadline, headers) -> {
                     if (address.contains("/api/v1/videos/")) {
                         inspected.add(address);
                         if (!address.endsWith(id(4))) throw new IOException("dead origin");
@@ -174,7 +174,7 @@ public final class PeerTubeSearchTest {
     public void enoughPlayableIndexResultsSkipTheUnquotedFallback() throws Exception {
         List<String> requested = Collections.synchronizedList(new ArrayList<>());
         List<VideoItem> result = PeerTubeClient.search("Солярис", 0, 300,
-                (address, limit, deadline) -> {
+                (address, limit, deadline, headers) -> {
                     requested.add(address);
                     if (address.contains("/api/v1/videos/")) return playable();
                     return response(false, sepia("Solaris", id(1)), sepia("Solaris", id(2)),
@@ -191,7 +191,7 @@ public final class PeerTubeSearchTest {
     public void originInspectionsStayBoundedEvenWithManyDeadCandidates() throws Exception {
         List<String> inspected = Collections.synchronizedList(new ArrayList<>());
         List<VideoItem> result = PeerTubeClient.search("Солярис", 0, 300,
-                (address, limit, deadline) -> {
+                (address, limit, deadline, headers) -> {
                     if (address.contains("/api/v1/videos/")) {
                         inspected.add(address);
                         throw new IOException("dead origin");
@@ -210,7 +210,7 @@ public final class PeerTubeSearchTest {
     @Test
     public void unquotedFallbackCanFindTransliterationSpellingVariants() throws Exception {
         List<VideoItem> result = PeerTubeClient.search("Солярис", 0, 300,
-                (address, limit, deadline) -> {
+                (address, limit, deadline, headers) -> {
                     if (address.contains("/api/v1/videos/")) return playable();
                     if (address.contains("sepiasearch") && query(address).equals("solyaris")) {
                         return response(false, sepia("Solaris", UUID));
@@ -223,7 +223,7 @@ public final class PeerTubeSearchTest {
     @Test
     public void retainsTitleDurationAndQualityFilters() throws Exception {
         List<VideoItem> result = PeerTubeClient.search("Солярис", 1920, 300,
-                (address, limit, deadline) -> {
+                (address, limit, deadline, headers) -> {
                     if (address.contains("/api/v1/videos/")) return playable();
                     return response(false, sepia("Solaris", UUID), sepia("Солярис — трейлер", id(2)),
                             sepia("Solaris", id(3)).put("duration", 60));
@@ -234,7 +234,7 @@ public final class PeerTubeSearchTest {
     @Test
     public void metadataCanInvalidateAnOutdatedLongFilmDuration() throws Exception {
         List<VideoItem> result = PeerTubeClient.search("Солярис", 0, 300,
-                (address, limit, deadline) -> address.contains("/api/v1/videos/")
+                (address, limit, deadline, headers) -> address.contains("/api/v1/videos/")
                         ? new JSONObject(playable()).put("duration", 30).toString()
                         : response(false, sepia("Solaris", UUID)));
         assertTrue(result.isEmpty());
@@ -244,7 +244,7 @@ public final class PeerTubeSearchTest {
     public void interruptedSearchMakesNoRequestsAndPreservesCancellation() throws Exception {
         Thread.currentThread().interrupt();
         try {
-            assertTrue(PeerTubeClient.search("Солярис", 0, 300, (address, limit, deadline) -> {
+            assertTrue(PeerTubeClient.search("Солярис", 0, 300, (address, limit, deadline, headers) -> {
                 throw new AssertionError("cancelled search made a request");
             }).isEmpty());
             assertTrue(Thread.currentThread().isInterrupted());
@@ -260,7 +260,7 @@ public final class PeerTubeSearchTest {
         AtomicBoolean cancelled = new AtomicBoolean();
         Thread search = new Thread(() -> {
             try {
-                PeerTubeClient.search("Солярис", 0, 300, (address, limit, deadline) -> {
+                PeerTubeClient.search("Солярис", 0, 300, (address, limit, deadline, headers) -> {
                     started.countDown();
                     release.await();
                     return response(address.contains("peerseek"));

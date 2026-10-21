@@ -3,6 +3,7 @@ package ru.tubetv.app;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
@@ -20,6 +21,8 @@ import java.util.Set;
 final class PeerTubeClient {
     static final String SOURCE = "PEERTUBE";
     private static final String USER_AGENT = "0W-Tube/" + BuildConfig.VERSION_NAME + " PeerTube";
+    static final String MEDIA_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36";
     private static final int MIN_DURATION_SECONDS = PeerTubeSearch.MIN_DURATION_SECONDS;
     private static final int TIMEOUT_MS = 8_000;
     private static final int MAX_JSON_BYTES = 1024 * 1024;
@@ -44,7 +47,26 @@ final class PeerTubeClient {
     private static final ExpiringCache<String, Media> CACHE = new ExpiringCache<>(MAX_CACHE_ENTRIES, CACHE_MS);
     private static final TextReader HTTP = PeerTubeClient::getText;
 
-    interface TextReader { String read(String address, int limit, long deadline) throws Exception; }
+    interface TextReader {
+        String read(String address, int limit, long deadline, Map<String, String> headers) throws Exception;
+    }
+
+    static Map<String, String> apiHeaders() {
+        return requestHeaders(USER_AGENT, "application/json,application/vnd.apple.mpegurl,*/*", null);
+    }
+
+    /** The probe and Media3 must present the same client and video page to the origin/CDN. */
+    static Map<String, String> mediaHeaders(String pageUrl) {
+        return requestHeaders(MEDIA_USER_AGENT, "*/*", pageUrl);
+    }
+
+    private static Map<String, String> requestHeaders(String userAgent, String accept, String pageUrl) {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("User-Agent", userAgent);
+        headers.put("Accept", accept);
+        if (pageUrl != null && !pageUrl.isEmpty()) headers.put("Referer", pageUrl);
+        return Collections.unmodifiableMap(headers);
+    }
 
     static List<VideoItem> search(String query, int minWidth, int thumbnailWidth) throws Exception {
         return search(query, minWidth, thumbnailWidth, HTTP);
@@ -59,7 +81,7 @@ final class PeerTubeClient {
         String latin = transliterate(normalized);
         if (!latin.isEmpty() && !latin.equals(normalized)) variants.add(latin);
         return PeerTubeSearch.search(query, variants,
-                (address, deadline) -> new JSONObject(reader.read(address, MAX_JSON_BYTES, deadline)),
+                (address, deadline) -> new JSONObject(reader.read(address, MAX_JSON_BYTES, deadline, apiHeaders())),
                 (candidate, deadline) -> inspectCandidate(candidate, minWidth, thumbnailWidth, reader, deadline));
     }
 
@@ -224,8 +246,12 @@ final class PeerTubeClient {
         Media cached = fresh || reader != HTTP ? null : CACHE.get(apiUrl);
         if (cached != null) return cached;
 
-        JSONObject metadata = new JSONObject(reader.read(apiUrl, MAX_JSON_BYTES, deadline));
+        JSONObject metadata = new JSONObject(reader.read(apiUrl, MAX_JSON_BYTES, deadline, apiHeaders()));
         String base = origin(apiUrl);
+        String uuid = PeerTubeSearch.canonicalUuid(metadata.optString("uuid"));
+        String path = URI.create(apiUrl).getPath();
+        String id = uuid != null ? uuid : path.substring(path.lastIndexOf('/') + 1);
+        Map<String, String> headers = mediaHeaders(base + "videos/watch/" + id);
         List<Thumbnail> thumbnails = parseThumbnails(metadata, base);
         String bestDirectMuxed = null;
         int bestDirectMuxedHeight = -1;
@@ -279,7 +305,7 @@ final class PeerTubeClient {
                 String candidateMaster = httpUrl(playlist.optString("playlistUrl"), base);
                 if (candidateMaster == null) continue;
                 try {
-                    String manifest = reader.read(candidateMaster, MAX_MANIFEST_BYTES, deadline);
+                    String manifest = reader.read(candidateMaster, MAX_MANIFEST_BYTES, deadline, headers);
                     HlsInfo info = parseHls(candidateMaster, manifest);
                     if (!info.valid) continue;
                     if (masterUrl == null || info.maxWidth > (bestHls == null ? 0 : bestHls.maxWidth)) {
@@ -315,7 +341,7 @@ final class PeerTubeClient {
 
         Media result = new Media(streamUrl, streamMime, audioUrl, audioMime,
                 maxWidth, maxHeight, metadata.optLong("duration"), thumbnails,
-                PeerTubeSearch.canonicalUuid(metadata.optString("uuid")));
+                uuid);
         if (reader == HTTP) {
             CACHE.put(apiUrl, result);
             if (result.uuid != null) CACHE.put(base + "api/v1/videos/" + result.uuid, result);
@@ -436,21 +462,25 @@ final class PeerTubeClient {
         if (url != null && !values.containsKey(url)) values.put(url, new Thumbnail(url, 0, 0));
     }
 
-    private static String getText(String address, int limit, long deadline) throws Exception {
-        BoundedHttpReader.checkInterrupted();
-        HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
-        connection.setConnectTimeout(requestTimeout(deadline));
-        connection.setReadTimeout(requestTimeout(deadline));
-        connection.setRequestProperty("Accept", "application/json,application/vnd.apple.mpegurl,*/*");
-        connection.setRequestProperty("User-Agent", USER_AGENT);
-        try {
-            int code = connection.getResponseCode();
-            if (code < 200 || code >= 300) throw new Exception("PeerTube: HTTP " + code);
+    static String getText(String address, int limit, long deadline,
+                          Map<String, String> headers) throws IOException {
+        return ScopedCookies.with(ScopedCookies.NONE, () -> {
+            BoundedHttpReader.checkInterrupted();
+            HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
+            connection.setConnectTimeout(requestTimeout(deadline));
             connection.setReadTimeout(requestTimeout(deadline));
-            return BoundedHttpReader.readText(connection.getInputStream(), limit);
-        } finally {
-            connection.disconnect();
-        }
+            for (Map.Entry<String, String> header : headers.entrySet()) {
+                connection.setRequestProperty(header.getKey(), header.getValue());
+            }
+            try {
+                int code = connection.getResponseCode();
+                if (code < 200 || code >= 300) throw new IOException("PeerTube: HTTP " + code);
+                connection.setReadTimeout(requestTimeout(deadline));
+                return BoundedHttpReader.readText(connection.getInputStream(), limit);
+            } finally {
+                connection.disconnect();
+            }
+        });
     }
 
     private static int requestTimeout(long deadline) throws InterruptedIOException {

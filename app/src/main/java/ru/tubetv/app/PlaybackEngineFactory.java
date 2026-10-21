@@ -88,15 +88,16 @@ final class PlaybackEngineFactory {
         boolean vk = "VK VIDEO".equals(source);
         boolean dzen = "ДЗЕН".equals(source);
         boolean ok = "OK".equals(source);
-        Map<String, String> headers = new HashMap<>();
-        if (!dzen) {
-            String referer = vk ? "https://vkvideo.ru/" : ok ? OkClient.REFERER
-                    : PeerTubeClient.SOURCE.equals(source) ? pageUrl : "https://rutube.ru/";
+        boolean peerTube = PeerTubeClient.SOURCE.equals(source);
+        Map<String, String> headers = peerTube ? PeerTubeClient.mediaHeaders(pageUrl) : new HashMap<>();
+        if (!dzen && !peerTube) {
+            String referer = vk ? "https://vkvideo.ru/" : ok ? OkClient.REFERER : "https://rutube.ru/";
             if (referer != null) headers.put("Referer", referer);
         }
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
                 .setUserAgent(dzen ? DzenClient.USER_AGENT : vk ? VkWebClient.USER_AGENT
                         : ok ? OkClient.USER_AGENT
+                        : peerTube ? PeerTubeClient.MEDIA_USER_AGENT
                         : "Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36")
                 .setConnectTimeoutMs(8_000).setReadTimeoutMs(10_000)
                 .setAllowCrossProtocolRedirects(true).setDefaultRequestProperties(headers);
