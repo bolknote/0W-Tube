@@ -2,6 +2,11 @@
 
 Test date: 2026-10-21
 
+Follow-up on 2026-10-23: the 404 below affects the public static URL, not the audio
+file itself. The API's `fileDownloadUrl` serves the same valid AAC file with Range
+support. A playback-time 404/410 fallback is documented in the later file-fallback
+check; the header probe intentionally still tests the raw URLs in isolation.
+
 ## Change
 
 HLS verification and Media3 now share one media-header builder: the existing player

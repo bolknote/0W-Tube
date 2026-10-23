@@ -81,6 +81,7 @@ public final class PlayerActivity extends Activity {
     };
     private String streamUrl;
     private String streamMimeType;
+    private String streamFallbackUrl;
     private String videoSource;
     private String videoIdentityUrl;
     private boolean autoPlay;
@@ -364,6 +365,7 @@ public final class PlayerActivity extends Activity {
                     if (destroyed || isFinishing()) return;
                     streamUrl = resolved.streamUrl;
                     streamMimeType = resolved.streamMimeType;
+                    streamFallbackUrl = resolved.fallbackUrl;
                     if (activityStarted) startPlayerSafely();
                 });
             } catch (Exception error) {
@@ -392,7 +394,7 @@ public final class PlayerActivity extends Activity {
     private void startPlayer() {
         if (!activityStarted || destroyed || isFinishing() || streamUrl == null || player != null) return;
         player = PlaybackEngineFactory.create(this, videoSource, videoIdentityUrl,
-                trafficMode, targetHeight, audioOnly);
+                trafficMode, targetHeight, audioOnly, streamUrl, streamFallbackUrl);
         if (audioOnly) videoSurface.setVisibility(View.INVISIBLE);
         videoSurface.setMirrored(mirrored);
         Surface output = videoSurface.getVideoSurface();
@@ -942,6 +944,7 @@ public final class PlayerActivity extends Activity {
         background.putExtra("background_request", AudioPlaybackService.prepareStart(this));
         background.putExtra("stream_url", streamUrl);
         background.putExtra("stream_mime_type", streamMimeType);
+        background.putExtra("stream_fallback_url", streamFallbackUrl);
         background.putExtra("resume_position", player == null ? 0L : player.getCurrentPosition());
         background.putExtra("duration_ms", knownDuration);
         background.putExtra("playback_speed", playbackSpeed);

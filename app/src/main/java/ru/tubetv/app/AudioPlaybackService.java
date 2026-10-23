@@ -116,6 +116,7 @@ public final class AudioPlaybackService extends Service {
         startForeground(NOTIFICATION_ID, buildNotification(intent));
         try {
             startPlayer(streamUrl, intent.getStringExtra("stream_mime_type"),
+                    intent.getStringExtra("stream_fallback_url"),
                     Math.max(0L, intent.getLongExtra("resume_position", 0L)),
                     intent.getFloatExtra("playback_speed", 1f));
         } catch (RuntimeException error) {
@@ -126,8 +127,9 @@ public final class AudioPlaybackService extends Service {
     }
 
     @OptIn(markerClass = UnstableApi.class)
-    private void startPlayer(String streamUrl, String streamMimeType, long position, float speed) {
-        player = PlaybackEngineFactory.create(this, source, pageUrl, trafficMode, targetHeight, true);
+    private void startPlayer(String streamUrl, String streamMimeType, String fallbackUrl, long position, float speed) {
+        player = PlaybackEngineFactory.create(this, source, pageUrl, trafficMode, targetHeight, true,
+                streamUrl, fallbackUrl);
         player.addListener(new Player.Listener() {
             @Override public void onPlayerError(PlaybackException error) { stopSelf(); }
             @Override public void onPlaybackStateChanged(int state) {
@@ -147,6 +149,7 @@ public final class AudioPlaybackService extends Service {
         if (sourceIntent.getExtras() != null) open.putExtras(sourceIntent.getExtras());
         open.removeExtra("stream_url");
         open.removeExtra("stream_mime_type");
+        open.removeExtra("stream_fallback_url");
         open.putExtra("resume_background_audio", true);
         open.putExtra("auto_play", true);
         open.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);

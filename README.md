@@ -83,6 +83,8 @@ PeerTube search combines the public Sepia Search and PeerSeek indexes as a low-p
 
 PeerTube HLS verification and playback share the same User-Agent, Accept, and video-page Referer. Search and metadata requests retain their separate API headers; PeerTube requests do not inherit cookies from other services.
 
+If a selected PeerTube file returns HTTP 404 or 410, playback retries that file's explicit `fileDownloadUrl` from the API, preserving byte ranges and request headers. The successful alternate is reused for later seeks in the same player. This also applies to background audio, without preflight requests, transcoding, or downloading a whole file first. Other errors and unrelated HLS segments do not trigger this fallback.
+
 Private, deleted, region-restricted, DRM-protected, age-gated, or account-only videos may not be available. These public web interfaces can change independently of the application and may require future compatibility updates.
 
 ## Local data and privacy
@@ -142,6 +144,17 @@ The current application version is defined in `app/build.gradle`.
 Without release-key environment variables, release builds are unsigned. `codecprobe` is a separate diagnostic APK; it is not included in 0W-Tube. The `check.yml` workflow runs verification on main-branch pushes and pull requests.
 
 After playback changes, also exercise these scenarios on a phone and an Android TV device: close the player while its stream is resolving; switch between foreground and background audio; return immediately after sending audio to the background; switch to another video; rewind a watched video below one minute and reopen it; hold/release the seek buttons; change mirroring and playback speed. Local JVM tests do not exercise a device's audio/video drivers.
+
+The dependency-free Android instrumentation test covers PeerTube file fallback, exact request preservation, and seek-target reuse. On a test emulator, build and install both debug APKs, then run it:
+
+```sh
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb shell am instrument -w ru.tubetv.app.test/ru.tubetv.app.PeerTubeFallbackInstrumentation
+```
+
+Add `-e live true` before the component name to opt into real PeerTube requests, byte-range reads and audio playback after a seek. Live checks distinguish a remote timeout from a regression by repeating the failed request without the fallback wrapper; such unavailable sources are reported explicitly. No complete films are downloaded.
 
 ## Tagged releases
 

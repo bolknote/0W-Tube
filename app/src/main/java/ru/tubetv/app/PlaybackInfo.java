@@ -3,6 +3,7 @@ package ru.tubetv.app;
 final class PlaybackInfo {
     final String streamUrl;
     final String streamMimeType;
+    final String fallbackUrl;
     final int maxWidth;
     final int maxHeight;
 
@@ -11,8 +12,13 @@ final class PlaybackInfo {
     }
 
     PlaybackInfo(String streamUrl, String streamMimeType, int maxWidth, int maxHeight) {
+        this(streamUrl, streamMimeType, maxWidth, maxHeight, null);
+    }
+
+    PlaybackInfo(String streamUrl, String streamMimeType, int maxWidth, int maxHeight, String fallbackUrl) {
         this.streamUrl = streamUrl;
         this.streamMimeType = streamMimeType;
+        this.fallbackUrl = fallbackUrl;
         this.maxWidth = maxWidth;
         this.maxHeight = maxHeight;
     }

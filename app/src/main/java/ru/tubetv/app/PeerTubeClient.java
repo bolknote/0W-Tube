@@ -127,11 +127,11 @@ final class PeerTubeClient {
                 throw new Exception("PeerTube не отдал отдельный или низкокачественный аудиопоток");
             }
             return new PlaybackInfo(media.audioUrl, media.audioMimeType,
-                    media.maxWidth, media.maxHeight);
+                    media.maxWidth, media.maxHeight, media.downloadUrls.get(media.audioUrl));
         }
         if (media.streamUrl == null) throw new Exception("PeerTube не отдал воспроизводимый поток");
         return new PlaybackInfo(media.streamUrl, media.streamMimeType,
-                media.maxWidth, media.maxHeight);
+                media.maxWidth, media.maxHeight, media.downloadUrls.get(media.streamUrl));
     }
 
     static Evaluation evaluate(String query, String title, int durationSeconds) {
@@ -264,6 +264,7 @@ final class PeerTubeClient {
 
         JSONArray directFiles = metadata.optJSONArray("files");
         FileSelection direct = parseFiles(directFiles, base);
+        Map<String, String> downloadUrls = new LinkedHashMap<>(direct.downloadUrls);
         bestDirectMuxed = direct.bestMuxedUrl;
         bestDirectMuxedHeight = direct.bestMuxedHeight;
         lowestDirectMuxed = direct.lowestMuxedUrl;
@@ -282,6 +283,7 @@ final class PeerTubeClient {
                 JSONObject playlist = playlists.optJSONObject(i);
                 if (playlist == null) continue;
                 FileSelection files = parseFiles(playlist.optJSONArray("files"), base);
+                downloadUrls.putAll(files.downloadUrls);
                 if (files.maxWidth > maxWidth) {
                     maxWidth = files.maxWidth;
                     maxHeight = files.maxHeight;
@@ -341,7 +343,7 @@ final class PeerTubeClient {
 
         Media result = new Media(streamUrl, streamMime, audioUrl, audioMime,
                 maxWidth, maxHeight, metadata.optLong("duration"), thumbnails,
-                uuid);
+                uuid, downloadUrls);
         if (reader == HTTP) {
             CACHE.put(apiUrl, result);
             if (result.uuid != null) CACHE.put(base + "api/v1/videos/" + result.uuid, result);
@@ -357,6 +359,8 @@ final class PeerTubeClient {
             if (file == null) continue;
             String url = httpUrl(file.optString("fileUrl"), base);
             if (url == null) continue;
+            String download = httpUrl(file.optString("fileDownloadUrl"), base);
+            if (download != null && !download.equals(url)) result.downloadUrls.put(url, download);
             JSONObject resolution = file.optJSONObject("resolution");
             int width = Math.max(0, file.optInt("width"));
             int height = Math.max(0, file.optInt("height"));
@@ -666,6 +670,7 @@ final class PeerTubeClient {
     }
 
     private static final class FileSelection {
+        final Map<String, String> downloadUrls = new LinkedHashMap<>();
         String bestMuxedUrl;
         int bestMuxedHeight = -1;
         String lowestMuxedUrl;
@@ -698,9 +703,11 @@ final class PeerTubeClient {
         final long durationSeconds;
         final List<Thumbnail> thumbnails;
         final String uuid;
+        final Map<String, String> downloadUrls;
 
         Media(String streamUrl, String streamMimeType, String audioUrl, String audioMimeType,
-              int maxWidth, int maxHeight, long durationSeconds, List<Thumbnail> thumbnails, String uuid) {
+              int maxWidth, int maxHeight, long durationSeconds, List<Thumbnail> thumbnails, String uuid,
+              Map<String, String> downloadUrls) {
             this.streamUrl = streamUrl;
             this.streamMimeType = streamMimeType;
             this.audioUrl = audioUrl;
@@ -710,6 +717,7 @@ final class PeerTubeClient {
             this.durationSeconds = durationSeconds;
             this.thumbnails = thumbnails;
             this.uuid = uuid;
+            this.downloadUrls = Collections.unmodifiableMap(new LinkedHashMap<>(downloadUrls));
         }
 
         String thumbnailFor(int targetWidth) {

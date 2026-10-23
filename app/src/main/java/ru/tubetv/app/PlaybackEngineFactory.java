@@ -32,7 +32,8 @@ import java.util.Map;
 @OptIn(markerClass = UnstableApi.class)
 final class PlaybackEngineFactory {
     static ExoPlayer create(Context context, String source, String pageUrl,
-                            boolean trafficMode, int targetHeight, boolean audioOnly) {
+                            boolean trafficMode, int targetHeight, boolean audioOnly,
+                            String streamUrl, String fallbackUrl) {
         DeviceCapabilities capabilities = DeviceCapabilities.get();
         MediaCodecSelector selector = (mimeType, secure, tunneling) -> {
             List<MediaCodecInfo> available = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling);
@@ -53,7 +54,7 @@ final class PlaybackEngineFactory {
         ExoPlayer player = new ExoPlayer.Builder(context)
                 .setRenderersFactory(new DefaultRenderersFactory(context)
                         .setMediaCodecSelector(selector).setEnableDecoderFallback(true))
-                .setMediaSourceFactory(new DefaultMediaSourceFactory(http(source, pageUrl)))
+                .setMediaSourceFactory(new DefaultMediaSourceFactory(http(source, pageUrl, streamUrl, fallbackUrl)))
                 .build();
         TrackSelectionParameters.Builder tracks = player.getTrackSelectionParameters().buildUpon();
         String[] video = capabilities.preferredVideoMimes(trafficMode);
@@ -84,7 +85,7 @@ final class PlaybackEngineFactory {
         return item.build();
     }
 
-    private static DataSource.Factory http(String source, String pageUrl) {
+    static DataSource.Factory http(String source, String pageUrl, String streamUrl, String fallbackUrl) {
         boolean vk = "VK VIDEO".equals(source);
         boolean dzen = "ДЗЕН".equals(source);
         boolean ok = "OK".equals(source);
@@ -103,7 +104,12 @@ final class PlaybackEngineFactory {
                 .setAllowCrossProtocolRedirects(true).setDefaultRequestProperties(headers);
         CookieHandler cookies = dzen ? new CookieManager(null, CookiePolicy.ACCEPT_ORIGINAL_SERVER)
                 : ScopedCookies.NONE;
-        return () -> new CookieDataSource(http.createDataSource(), cookies);
+        FileFallbackDataSource.Target target = peerTube && streamUrl != null && fallbackUrl != null
+                && !streamUrl.equals(fallbackUrl) ? new FileFallbackDataSource.Target(streamUrl, fallbackUrl) : null;
+        return () -> {
+            DataSource upstream = new CookieDataSource(http.createDataSource(), cookies);
+            return target == null ? upstream : new FileFallbackDataSource(upstream, target);
+        };
     }
 
     private static final class CookieDataSource implements DataSource {

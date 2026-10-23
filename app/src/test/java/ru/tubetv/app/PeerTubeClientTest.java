@@ -2,6 +2,7 @@ package ru.tubetv.app;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
@@ -94,6 +95,56 @@ public final class PeerTubeClientTest {
                         + "\"hasVideo\":false,\"hasAudio\":true,\"size\":4096}]}");
         assertEquals("https://video.example/audio.mp4", audio.streamUrl);
         assertEquals("audio/mp4", audio.streamMimeType);
+    }
+
+    @Test
+    public void selectedAudioRetainsItsOwnDownloadUrlWithoutProbingIt() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        PeerTubeClient.TextReader reader = (address, limit, deadline, headers) -> {
+            requests.incrementAndGet();
+            assertTrue(address.contains("/api/v1/videos/"));
+            return "{\"files\":["
+                    + "{\"fileUrl\":\"/video.mp4\",\"fileDownloadUrl\":\"/download/video.mp4\","
+                    + "\"width\":1280,\"height\":720,\"hasVideo\":true,\"hasAudio\":true},"
+                    + "{\"fileUrl\":\"/audio.mp4\",\"fileDownloadUrl\":\"/download/audio.mp4\","
+                    + "\"hasVideo\":false,\"hasAudio\":true,\"size\":4096}]}";
+        };
+        String api = "https://films.example/api/v1/videos/test";
+        PlaybackInfo audio = PeerTubeClient.resolve(api, true, true, reader);
+        PlaybackInfo video = PeerTubeClient.resolve(api, false, true, reader);
+        assertEquals("https://films.example/audio.mp4", audio.streamUrl);
+        assertEquals("https://films.example/download/audio.mp4", audio.fallbackUrl);
+        assertEquals("https://films.example/download/video.mp4", video.fallbackUrl);
+        assertEquals(2, requests.get());
+    }
+
+    @Test
+    public void playlistFileDownloadUrlDoesNotBecomeAMasterPlaylistFallback() throws Exception {
+        PeerTubeClient.TextReader reader = (address, limit, deadline, headers) -> {
+            if (address.contains("/api/v1/videos/")) {
+                return "{\"streamingPlaylists\":[{\"playlistUrl\":\"/master.m3u8\",\"files\":["
+                        + "{\"fileUrl\":\"/audio.mp4\",\"fileDownloadUrl\":\"/download/audio.mp4\","
+                        + "\"hasVideo\":false,\"hasAudio\":true,\"size\":4096}]}]}";
+            }
+            return separateAudioManifest();
+        };
+        String api = "https://films.example/api/v1/videos/test";
+        assertNull(PeerTubeClient.resolve(api, false, true, reader).fallbackUrl);
+        assertEquals("https://films.example/download/audio.mp4",
+                PeerTubeClient.resolve(api, true, true, reader).fallbackUrl);
+    }
+
+    @Test
+    public void invalidOrIdenticalDownloadUrlsAreNotRetained() throws Exception {
+        for (String download : new String[]{"", "http://files.example/audio.mp4", "javascript:alert(1)",
+                "https://films.example/audio.mp4"}) {
+            PlaybackInfo audio = PeerTubeClient.resolve("https://films.example/api/v1/videos/test", true, true,
+                    (address, limit, deadline, headers) -> new JSONObject().put("files", new org.json.JSONArray()
+                            .put(new JSONObject().put("fileUrl", "/audio.mp4").put("fileDownloadUrl", download)
+                                    .put("hasAudio", true).put("hasVideo", false).put("size", 4096))).toString());
+            assertNull(audio.fallbackUrl);
+        }
+        assertNull(new PlaybackInfo("https://other.example/video", 1280, 720).fallbackUrl);
     }
 
     @Test

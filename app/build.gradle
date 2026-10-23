@@ -16,6 +16,7 @@ android {
         targetSdk 35
         versionCode 32
         versionName '0.7.4'
+        testInstrumentationRunner 'ru.tubetv.app.PeerTubeFallbackInstrumentation'
         resourceConfigurations += ['ru']
     }
 
