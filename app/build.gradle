@@ -14,8 +14,8 @@ android {
         applicationId 'ru.tubetv.app'
         minSdk 23
         targetSdk 35
-        versionCode 32
-        versionName '0.7.4'
+        versionCode 33
+        versionName '0.7.5'
         testInstrumentationRunner 'ru.tubetv.app.PeerTubeFallbackInstrumentation'
         resourceConfigurations += ['ru']
     }
