@@ -68,6 +68,8 @@ public final class MainActivity extends Activity {
     private final List<VideoItem> items = new ArrayList<>();
     private final Map<String, WatchHistoryStore.Entry> historyByKey = new HashMap<>();
     private final Set<String> qualityRequested = new HashSet<>();
+    private final Map<String, PagedSearchSession> pagedSearches = new HashMap<>();
+    private final Set<String> runningPagedSearches = new HashSet<>();
     private static final String[] NORMAL_FILTER_LABELS = {"Любое", "720+", "1080+", "1440+", "2160 / 4K"};
     private static final int[] NORMAL_FILTER_WIDTHS = {0, 1280, 1920, 2560, 3840};
     private static final String[] TRAFFIC_FILTER_LABELS = {"HD+", "480", "360", "240", "144", "Звук"};
@@ -442,6 +444,11 @@ public final class MainActivity extends Activity {
         if (!historyMode) items.clear();
         qualityRequested.clear();
         qualityJobs = 0;
+        pagedSearches.clear();
+        pagedSearches.put("RUTUBE", searchClient.newRutubeSearch(value));
+        pagedSearches.put("ДЗЕН", searchClient.newDzenSearch(value));
+        pagedSearches.put("OK", searchClient.newOkSearch(value));
+        runningPagedSearches.clear();
         vkSearchSession = searchClient.newVkSearch(value, thumbnailTargetWidth);
         vkSearchRunning = false;
         if (!historyMode) adapter.notifyDataSetChanged();
@@ -453,13 +460,10 @@ public final class MainActivity extends Activity {
         okDone = false;
         peerTubeDone = false;
         updateSearchStatus();
-        activeSearches.add(network.submit(
-                () -> runSource(current, "RUTUBE", () -> searchClient.searchRutube(value, 0))));
+        requestPages(current, "RUTUBE");
         requestVkPages(current);
-        activeSearches.add(network.submit(
-                () -> runDzenSource(current, value)));
-        activeSearches.add(network.submit(
-                () -> runSource(current, "OK", () -> searchClient.searchOk(value, 0))));
+        requestPages(current, "ДЗЕН");
+        requestPages(current, "OK");
         // Submitted last on a four-thread executor: PeerTube starts only after one of the
         // primary services has returned and can never delay their first cards.
         activeSearches.add(network.submit(() -> runSource(current, PeerTubeClient.SOURCE,
@@ -474,6 +478,7 @@ public final class MainActivity extends Activity {
             refreshDisplayedItems(false);
             if (selectedFilter > 0) requestMissingQualities(generation.get(), new ArrayList<>(allItems));
             requestVkPages(generation.get());
+            requestPagedSources(generation.get());
         }
     }
 
@@ -485,6 +490,7 @@ public final class MainActivity extends Activity {
         refreshDisplayedItems(false);
         if (!allItems.isEmpty()) requestMissingQualities(generation.get(), new ArrayList<>(allItems));
         requestVkPages(generation.get());
+        requestPagedSources(generation.get());
     }
 
     private void applyFilterMode() {
@@ -560,12 +566,29 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void runDzenSource(int current, String value) {
+    private void requestPagedSources(int current) {
+        requestPages(current, "RUTUBE");
+        requestPages(current, "ДЗЕН");
+        requestPages(current, "OK");
+    }
+
+    private void requestPages(int current, String source) {
+        PagedSearchSession session = pagedSearches.get(source);
+        if (!searchStarted || current != generation.get() || session == null
+                || runningPagedSearches.contains(source) || !session.needsMore(minimumSearchWidth())) return;
+        int minWidth = minimumSearchWidth();
+        runningPagedSearches.add(source);
+        if ("RUTUBE".equals(source)) rutubeDone = false;
+        else if ("ДЗЕН".equals(source)) dzenDone = false;
+        else if ("OK".equals(source)) okDone = false;
+        updateSearchStatus();
+        activeSearches.add(network.submit(() -> runPagedSource(current, source, session, minWidth)));
+    }
+
+    private void runPagedSource(int current, String source, PagedSearchSession session, int minWidth) {
         try {
-            searchClient.searchDzenPages(value, found -> {
-                if (Thread.currentThread().isInterrupted() || current != generation.get()) {
-                    return false;
-                }
+            session.searchPages(minWidth, found -> {
+                if (Thread.currentThread().isInterrupted() || current != generation.get()) return false;
                 runOnUiThread(() -> {
                     if (current != generation.get()) return;
                     allItems.addAll(found);
@@ -574,14 +597,14 @@ public final class MainActivity extends Activity {
                 });
                 return true;
             });
+        } catch (Exception ignored) {
+            // Keep successful pages when a later page or quality request fails.
+        } finally {
             runOnUiThread(() -> {
-                if (current == generation.get()) finishSource("Дзен");
-            });
-        } catch (Exception e) {
-            runOnUiThread(() -> {
-                if (current == generation.get()) {
-                    finishSource("Дзен");
-                }
+                if (current != generation.get()) return;
+                runningPagedSearches.remove(source);
+                finishSource(source);
+                requestPages(current, source);
             });
         }
     }
@@ -591,7 +614,7 @@ public final class MainActivity extends Activity {
             rutubeDone = true;
         } else if ("VK Video".equals(source)) {
             vkDone = true;
-        } else if ("Дзен".equals(source)) {
+        } else if ("ДЗЕН".equals(source)) {
             dzenDone = true;
         } else if ("OK".equals(source)) {
             okDone = true;
@@ -639,6 +662,8 @@ public final class MainActivity extends Activity {
         List<VideoItem> dzen = new ArrayList<>();
         List<VideoItem> ok = new ArrayList<>();
         for (VideoItem item : candidates) {
+            PagedSearchSession session = pagedSearches.get(item.source);
+            if (session != null && !session.allowsQualityProbe(item)) continue;
             String key = item.stableKey();
             if (item.maxWidth != 0 || !qualityRequested.add(key)) continue;
             if ("ДЗЕН".equals(item.source)) dzen.add(item);
@@ -658,6 +683,9 @@ public final class MainActivity extends Activity {
             List<VideoItem> inspected = SearchClient.inspectQualities(missing, parallel);
             runOnUiThread(() -> {
                 if (current != generation.get()) return;
+                for (PagedSearchSession session : pagedSearches.values()) {
+                    session.completeQualities(missing, inspected);
+                }
                 Map<String, VideoItem> byKey = new HashMap<>();
                 for (VideoItem item : inspected) byKey.put(item.stableKey(), item);
                 for (int i = 0; i < allItems.size(); i++) {
@@ -669,6 +697,7 @@ public final class MainActivity extends Activity {
                 }
                 qualityJobs = Math.max(0, qualityJobs - 1);
                 refreshDisplayedItems(false);
+                requestPagedSources(current);
             });
         }));
     }

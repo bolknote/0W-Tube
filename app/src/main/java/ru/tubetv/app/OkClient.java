@@ -25,21 +25,39 @@ final class OkClient {
             + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
 
     static List<VideoItem> search(String query, int minWidth) throws Exception {
-        String address = "https://ok.ru/video/search"
-                + "?st.cmd=anonymVideo"
-                + "&st.ft=search"
-                + "&st.gsq=" + encode(query)
-                + "&st.m=SEARCH";
-        List<VideoItem> result = parseSearchResults(get(address, REFERER, MAX_SEARCH_BYTES));
-        if (minWidth <= 0 || result.isEmpty()) return result;
-        List<VideoItem> filtered = new ArrayList<>();
-        for (VideoItem item : result) {
-            if (item.maxWidth >= minWidth) filtered.add(item);
-        }
-        return filtered;
+        return newSearch(query).search(minWidth);
+    }
+
+    static PagedSearchSession newSearch(String query) {
+        return new PagedSearchSession(new PagedSearchSession.PageLoader() {
+            private JSONObject parameters;
+            private int channelsOffset;
+
+            @Override public PagedSearchSession.Page load(String cursor) throws Exception {
+                int offset = cursor == null ? 0 : Integer.parseInt(cursor);
+                JSONObject data;
+                if (cursor == null) {
+                    String address = "https://ok.ru/video/search?st.cmd=anonymVideo"
+                            + "&st.ft=search&st.gsq=" + encode(query) + "&st.m=SEARCH";
+                    data = parseSearchProps(get(address, REFERER, MAX_SEARCH_BYTES));
+                    parameters = searchParameters(data, query, 0, 0);
+                } else {
+                    parameters.put("videosOffset", offset).put("channelsOffset", channelsOffset);
+                    data = searchResponse(new JSONObject(postSearch(parameters)));
+                }
+                JSONObject channels = data.optJSONObject("channels");
+                JSONArray list = channels == null ? null : channels.optJSONArray("list");
+                if (list != null) channelsOffset += list.length();
+                return parseSearchPage(data, offset);
+            }
+        });
     }
 
     static List<VideoItem> parseSearchResults(String html) throws Exception {
+        return parseSearchItems(parseSearchProps(html), LIMIT);
+    }
+
+    static JSONObject parseSearchProps(String html) throws Exception {
         int component = html.indexOf("<video-search-result");
         int tagEnd = component < 0 ? -1 : html.indexOf('>', component);
         if (component < 0 || tagEnd < 0) {
@@ -50,14 +68,51 @@ final class OkClient {
             throw new Exception("OK не отдал данные результатов");
         }
 
-        JSONObject props = new JSONObject(decodeHtml(encoded));
+        return new JSONObject(decodeHtml(encoded));
+    }
+
+    static PagedSearchSession.Page parseSearchPage(JSONObject props, int offset) {
+        JSONObject videos = props.optJSONObject("videos");
+        JSONArray list = videos == null ? null : videos.optJSONArray("list");
+        // The site's offset counts every row, including blocked and external videos.
+        String next = list != null && list.length() > 0 && videos.optBoolean("hasMore")
+                ? Integer.toString(offset + list.length()) : null;
+        return new PagedSearchSession.Page(
+                parseSearchItems(props, PagedSearchSession.MAX_CANDIDATES), next);
+    }
+
+    static JSONObject searchParameters(JSONObject state, String query, int offset,
+                                       int channelsOffset) throws Exception {
+        JSONObject filters = state.optJSONObject("filters");
+        if (filters == null) filters = new JSONObject();
+        JSONObject parameters = new JSONObject()
+                .put("displayMode", filters.optString("displayMode", "Movie"))
+                .put("videosOffset", offset)
+                .put("channelsOffset", channelsOffset)
+                .put("searchQuery", state.optString("searchQuery", query))
+                .put("currentStateId", state.optString("currentStateId", "anonymVideo"))
+                .put("durationType", filters.optString("durationType", "ANY"))
+                .put("hd", filters.optBoolean("hdQuality"));
+        if (filters.has("createdType")) parameters.put("createdType", filters.get("createdType"));
+        return parameters;
+    }
+
+    static JSONObject searchResponse(JSONObject response) throws Exception {
+        JSONObject result = response.optJSONObject("result");
+        if (!response.optBoolean("success") || result == null) {
+            throw new Exception("OK не отдал следующую страницу поиска");
+        }
+        return result;
+    }
+
+    private static List<VideoItem> parseSearchItems(JSONObject props, int limit) {
         JSONObject videos = props.optJSONObject("videos");
         JSONArray list = videos == null ? null : videos.optJSONArray("list");
         List<VideoItem> result = new ArrayList<>();
         if (list == null) return result;
 
         Set<String> seen = new LinkedHashSet<>();
-        for (int i = 0; i < list.length() && result.size() < LIMIT; i++) {
+        for (int i = 0; i < list.length() && result.size() < limit; i++) {
             JSONObject card = list.optJSONObject(i);
             JSONObject movie = card == null ? null : card.optJSONObject("movie");
             if (movie == null || movie.optBoolean("blocked")) continue;
@@ -402,6 +457,31 @@ final class OkClient {
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("OK: HTTP " + code);
             return read(connection, limit);
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private static String postSearch(JSONObject parameters) throws Exception {
+        BoundedHttpReader.checkInterrupted();
+        HttpURLConnection connection = configure((HttpURLConnection) new URL(
+                "https://ok.ru/web-api/v2/video/fetchSearchResult").openConnection(),
+                "https://ok.ru/video/search");
+        connection.setRequestMethod("POST");
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        connection.setRequestProperty("Origin", "https://ok.ru");
+        connection.setRequestProperty("X-Requested-With", "XMLHttpRequest");
+        byte[] bytes = new JSONObject().put("id", 1).put("parameters", parameters)
+                .toString().getBytes(StandardCharsets.UTF_8);
+        connection.setFixedLengthStreamingMode(bytes.length);
+        try {
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(bytes);
+            }
+            int code = connection.getResponseCode();
+            if (code < 200 || code >= 300) throw new Exception("OK: HTTP " + code);
+            return read(connection, MAX_SEARCH_BYTES);
         } finally {
             connection.disconnect();
         }

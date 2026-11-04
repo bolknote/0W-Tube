@@ -17,7 +17,6 @@ import java.util.Set;
 
 final class DzenClient {
     private static final int LIMIT = 12;
-    private static final int MAX_PAGES = 3;
     private static final int TIMEOUT_MS = 9_000;
     static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
@@ -28,68 +27,48 @@ final class DzenClient {
     }
 
     List<VideoItem> search(String query, int minWidth) throws Exception {
-        List<VideoItem> result = new ArrayList<>();
-        searchPages(query, page -> {
-            result.addAll(page);
-            return true;
-        });
-        if (minWidth <= 0 || result.isEmpty()) return result;
-
-        List<VideoItem> filtered = new ArrayList<>();
-        List<VideoItem> unknown = new ArrayList<>();
-        for (VideoItem item : result) {
-            if (item.maxWidth == 0) unknown.add(item);
-            else if (item.maxWidth >= minWidth) filtered.add(item);
-        }
-        filtered.addAll(SearchClient.filterByQuality(unknown, minWidth, 2));
-        return filtered;
+        return newSearch(query).search(minWidth);
     }
 
     int searchPages(String query, PageListener listener) throws Exception {
-        try {
-            int count = searchJsonPages(query, listener);
-            if (count > 0) return count;
-        } catch (Exception jsonError) {
-            if (Thread.currentThread().isInterrupted()) throw jsonError;
-        }
-        String address = "https://dzen.ru/search?query=" + Uri.encode(query)
-                + "&type_filter=video";
-        List<VideoItem> fallback = parseCards(getPage(address));
-        if (!fallback.isEmpty()) listener.onPage(fallback);
-        return fallback.size();
+        return newSearch(query).searchPages(0, listener::onPage);
     }
 
-    private int searchJsonPages(String query, PageListener listener) throws Exception {
-        String address = "https://dzen.ru/api/web/v1/zen-search"
+    PagedSearchSession newSearch(String query) {
+        String initial = "https://dzen.ru/api/web/v1/zen-search"
                 + "?country_code=ru"
                 + "&forced_request_type=long_video_search"
                 + "&query=" + Uri.encode(query)
                 + "&clid=1400"
                 + "&type_filter=video"
                 + "&lang=ru";
-        Set<String> seen = new LinkedHashSet<>();
-        int total = 0;
-        for (int pageNumber = 0; pageNumber < MAX_PAGES && total < LIMIT; pageNumber++) {
-            JSONObject response;
-            try {
-                response = getJsonPage(address);
-            } catch (Exception error) {
-                if (total > 0) return total;
-                throw error;
-            }
-            JSONObject feed = response.optJSONObject("feedData");
-            if (feed == null) feed = response;
-            List<VideoItem> page = parseJsonItems(feed.optJSONArray("items"),
-                    seen, LIMIT - total);
-            total += page.size();
-            if (!page.isEmpty() && !listener.onPage(page)) break;
+        return new PagedSearchSession(new PagedSearchSession.PageLoader() {
+            private boolean receivedCards;
 
-            JSONObject more = feed.optJSONObject("more");
-            String next = more == null ? "" : more.optString("link");
-            if (next.isEmpty() || next.equals(address)) break;
-            address = next;
-        }
-        return total;
+            @Override public PagedSearchSession.Page load(String cursor) throws Exception {
+                String address = cursor == null ? initial : cursor;
+                try {
+                    PagedSearchSession.Page page = parseJsonPage(getJsonPage(address), address);
+                    receivedCards |= !page.items.isEmpty();
+                    if (receivedCards || page.next != null) return page;
+                } catch (Exception error) {
+                    if (receivedCards || Thread.currentThread().isInterrupted()) throw error;
+                }
+                String fallback = "https://dzen.ru/search?query=" + Uri.encode(query) + "&type_filter=video";
+                return new PagedSearchSession.Page(
+                        parseCards(getPage(fallback), PagedSearchSession.MAX_CANDIDATES), null);
+            }
+        });
+    }
+
+    static PagedSearchSession.Page parseJsonPage(JSONObject response, String address) {
+        JSONObject feed = response.optJSONObject("feedData");
+        if (feed == null) feed = response;
+        List<VideoItem> items = parseJsonItems(feed.optJSONArray("items"),
+                new LinkedHashSet<>(), PagedSearchSession.MAX_CANDIDATES);
+        JSONObject more = feed.optJSONObject("more");
+        return new PagedSearchSession.Page(items, PagedSearchSession.sameOriginNext(
+                more == null ? null : more.optString("link"), address));
     }
 
     private static List<VideoItem> parseJsonItems(JSONArray items, Set<String> seen, int limit) {
@@ -211,11 +190,15 @@ final class DzenClient {
     }
 
     private static List<VideoItem> parseCards(String html) {
+        return parseCards(html, LIMIT);
+    }
+
+    private static List<VideoItem> parseCards(String html, int limit) {
         List<VideoItem> result = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
         String marker = "https://dzen.ru/video/watch/";
         int cursor = 0;
-        while (result.size() < LIMIT) {
+        while (result.size() < limit) {
             int link = html.indexOf(marker, cursor);
             if (link < 0) break;
             int idStart = link + marker.length();

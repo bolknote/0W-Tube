@@ -11,18 +11,27 @@ import java.util.ArrayList;
 import java.util.List;
 
 final class SearchClient {
-    private static final int LIMIT = 12;
     private static final int TIMEOUT_MS = 7000;
 
     List<VideoItem> searchRutube(String query, int minWidth) throws Exception {
-        String url = "https://rutube.ru/api/search/video/?query="
-                + Uri.encode(query) + "&page=1";
-        JSONObject root = getJson(url);
+        return newRutubeSearch(query).search(minWidth);
+    }
+
+    PagedSearchSession newRutubeSearch(String query) {
+        return new PagedSearchSession(cursor -> {
+            String url = cursor == null ? "https://rutube.ru/api/search/video/?query="
+                    + Uri.encode(query) + "&page=1&limit=30" : cursor;
+            return parseRutubePage(getJson(url), url);
+        });
+    }
+
+    static PagedSearchSession.Page parseRutubePage(JSONObject root, String address) throws Exception {
         JSONArray items = root.optJSONArray("results");
         List<VideoItem> result = new ArrayList<>();
-        if (items == null) return result;
-        for (int i = 0; i < Math.min(items.length(), LIMIT); i++) {
-            JSONObject item = items.getJSONObject(i);
+        if (items == null) return new PagedSearchSession.Page(result, null);
+        for (int i = 0; i < Math.min(items.length(), PagedSearchSession.MAX_CANDIDATES); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item == null) continue;
             String id = item.optString("id");
             String page = item.optString("video_url", "https://rutube.ru/video/" + id + "/");
             String embed = item.optString("embed_url", "https://rutube.ru/play/embed/" + id);
@@ -32,8 +41,8 @@ final class SearchClient {
                     "", item.optString("thumbnail_url"),
                     embed, page, duration * 1000L));
         }
-        if (minWidth <= 0 || result.isEmpty()) return result;
-        return filterByQuality(result, minWidth);
+        return new PagedSearchSession.Page(result,
+                PagedSearchSession.sameOriginNext(root.optString("next"), address));
     }
 
     int searchVkPages(String query, int minWidth, int thumbnailWidth,
@@ -48,6 +57,10 @@ final class SearchClient {
     List<VideoItem> searchOk(String query, int minWidth) throws Exception {
         return OkClient.search(query, minWidth);
     }
+
+    PagedSearchSession newOkSearch(String query) { return OkClient.newSearch(query); }
+
+    PagedSearchSession newDzenSearch(String query) { return new DzenClient().newSearch(query); }
 
     List<VideoItem> searchPeerTube(String query, int minWidth, int thumbnailWidth) throws Exception {
         return PeerTubeClient.search(query, minWidth, thumbnailWidth);
