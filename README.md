@@ -75,6 +75,8 @@ RUTUBE search uses its public video search endpoint. Playback options are resolv
 
 VK Video search uses the same anonymous web API flow as the public `vkvideo.ru` search page. The application obtains a short-lived anonymous session and never asks for a VK account token. Public playback metadata is resolved separately for each selected video.
 
+The ordinary VK search initially shows up to 12 cards. A quality filter continues through cached cards and subsequent pages until it finds 12 matching candidates or reaches a shared limit of four page requests per query. Switching filters reuses the same cursor, buffered cards and request budget; it does not restart the search or reload completed pages.
+
 Dzen search uses its public JSON search API, with a server-rendered HTML fallback. The application keeps only anonymous session cookies, resolves fresh public stream metadata before playback, and uses the same quality filters as the other sources.
 
 OK search reads the public anonymous video-search component. Playback follows the same public metadata flow as yt-dlp's Odnoklassniki extractor: inline player metadata first, then the metadata endpoint and mobile-page fallback. Native OK HLS, DASH, and direct streams are supported without an account; external providers are ignored unless the application already supports them.

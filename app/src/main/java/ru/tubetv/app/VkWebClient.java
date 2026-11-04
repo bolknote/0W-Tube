@@ -19,6 +19,7 @@ import java.util.Set;
 final class VkWebClient {
     private static final int LIMIT = 12;
     private static final int MAX_PAGES = 4;
+    private static final int PAGE_SIZE = 30;
     private static final int TIMEOUT_MS = 10_000;
     private static final String CLIENT_ID = "52461373";
     private static final String API_VERSION = "5.282";
@@ -71,34 +72,113 @@ final class VkWebClient {
 
     int searchPages(String query, int minWidth, int thumbnailWidth,
                     PageListener listener) throws Exception {
-        String address = "https://api.vkvideo.ru/method/catalog.getVideoSearchWeb2"
-                + "?v=" + API_VERSION
-                + "&client_id=" + CLIENT_ID
-                + "&count=30"
-                + "&q=" + Uri.encode(query)
-                + "&content_type=video"
-                + (minWidth > 0 ? "&hd=1" : "");
-        JSONObject root = authorizedJson(address, null);
-        JSONObject response = response(root);
-        Set<String> seen = new LinkedHashSet<>();
-        int total = 0;
-        int pages = 0;
-        String previousNext = "";
-        while (response != null && total < LIMIT && pages++ < MAX_PAGES
-                && !Thread.currentThread().isInterrupted()) {
-            List<VideoItem> page = parsePage(response, thumbnailWidth, seen, LIMIT - total);
-            total += page.size();
-            if (!page.isEmpty() && !listener.onPage(page)) break;
-            PageCursor cursor = pageCursor(response);
-            if (cursor == null || cursor.nextFrom.equals(previousNext) || total >= LIMIT) break;
-            previousNext = cursor.nextFrom;
-            String body = "section_id=" + Uri.encode(cursor.sectionId)
-                    + "&start_from=" + Uri.encode(cursor.nextFrom);
-            root = authorizedJson("https://api.vkvideo.ru/method/catalog.getSection"
-                    + "?v=" + API_VERSION + "&client_id=" + CLIENT_ID, body);
-            response = response(root);
+        return newSearch(query, thumbnailWidth).searchPages(minWidth, listener);
+    }
+
+    SearchSession newSearch(String query, int thumbnailWidth) {
+        return new SearchSession(thumbnailWidth, (sectionId, nextFrom) -> {
+            String address;
+            String body = null;
+            if (nextFrom == null) {
+                address = "https://api.vkvideo.ru/method/catalog.getVideoSearchWeb2"
+                        + "?v=" + API_VERSION + "&client_id=" + CLIENT_ID
+                        + "&count=" + PAGE_SIZE + "&q=" + Uri.encode(query)
+                        + "&content_type=video";
+            } else {
+                address = "https://api.vkvideo.ru/method/catalog.getSection"
+                        + "?v=" + API_VERSION + "&client_id=" + CLIENT_ID;
+                body = "section_id=" + Uri.encode(sectionId)
+                        + "&start_from=" + Uri.encode(nextFrom);
+            }
+            return response(authorizedJson(address, body));
+        });
+    }
+
+    interface PageLoader {
+        JSONObject load(String sectionId, String nextFrom) throws Exception;
+    }
+
+    /** One query's cursor, buffered cards and shared request budget; callers serialize loading. */
+    static final class SearchSession {
+        private final int thumbnailWidth;
+        private final PageLoader loader;
+        private final List<VideoItem> candidates = new ArrayList<>();
+        private final Set<String> seen = new LinkedHashSet<>();
+        private final Set<String> requestedCursors = new LinkedHashSet<>();
+        private PageCursor next;
+        private int requests;
+        private int delivered;
+        private boolean exhausted;
+
+        SearchSession(int thumbnailWidth, PageLoader loader) {
+            this.thumbnailWidth = thumbnailWidth;
+            this.loader = loader;
         }
-        return total;
+
+        boolean needsMore(int minWidth) {
+            return deliveryEnd(minWidth) > delivered
+                    || (!hasEnough(minWidth) && !exhausted && requests < MAX_PAGES);
+        }
+
+        int requestCount() { return requests; }
+
+        int searchPages(int minWidth, PageListener listener) throws Exception {
+            int total = 0;
+            while (!Thread.currentThread().isInterrupted() && needsMore(minWidth)) {
+                int end = deliveryEnd(minWidth);
+                if (end > delivered) {
+                    List<VideoItem> page = new ArrayList<>(candidates.subList(delivered, end));
+                    delivered = end;
+                    total += page.size();
+                    if (!listener.onPage(page)) break;
+                    continue;
+                }
+
+                String cursorKey = next == null ? "" : next.sectionId + "\n" + next.nextFrom;
+                if (!requestedCursors.add(cursorKey)) {
+                    exhausted = true;
+                    break;
+                }
+                requests++;
+                try {
+                    JSONObject page = loader.load(next == null ? null : next.sectionId,
+                            next == null ? null : next.nextFrom);
+                    // Keep the entire bounded page: a stricter filter may need cards
+                    // after the ordinary 12-result cutoff without fetching it again.
+                    candidates.addAll(parsePage(page, thumbnailWidth, seen, PAGE_SIZE));
+                    next = pageCursor(page);
+                    if (next == null) exhausted = true;
+                } catch (Exception error) {
+                    exhausted = true;
+                    throw error;
+                }
+            }
+            return total;
+        }
+
+        private int deliveryEnd(int minWidth) {
+            int end = Math.min(LIMIT, candidates.size());
+            if (minWidth > 0) {
+                end = candidates.size();
+                int matching = 0;
+                for (int i = 0; i < candidates.size(); i++) {
+                    if (candidates.get(i).maxWidth >= minWidth && ++matching == LIMIT) {
+                        end = i + 1;
+                        break;
+                    }
+                }
+            }
+            return Math.max(delivered, end);
+        }
+
+        private boolean hasEnough(int minWidth) {
+            if (minWidth <= 0) return candidates.size() >= LIMIT;
+            int matching = 0;
+            for (VideoItem item : candidates) {
+                if (item.maxWidth >= minWidth && ++matching >= LIMIT) return true;
+            }
+            return false;
+        }
     }
 
     private static JSONObject authorizedJson(String address, String body) throws Exception {

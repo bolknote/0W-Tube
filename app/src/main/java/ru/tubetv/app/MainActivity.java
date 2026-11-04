@@ -93,6 +93,8 @@ public final class MainActivity extends Activity {
     private final List<Future<?>> activeSearches = new ArrayList<>();
     private boolean rutubeDone;
     private boolean vkDone;
+    private VkWebClient.SearchSession vkSearchSession;
+    private boolean vkSearchRunning;
     private boolean dzenDone;
     private boolean okDone;
     private boolean peerTubeDone;
@@ -440,6 +442,8 @@ public final class MainActivity extends Activity {
         if (!historyMode) items.clear();
         qualityRequested.clear();
         qualityJobs = 0;
+        vkSearchSession = searchClient.newVkSearch(value, thumbnailTargetWidth);
+        vkSearchRunning = false;
         if (!historyMode) adapter.notifyDataSetChanged();
         StateStore.saveSearch(this, value, selectedFilter, trafficMode);
         if (historyMode) StateStore.markHistory(this);
@@ -451,8 +455,7 @@ public final class MainActivity extends Activity {
         updateSearchStatus();
         activeSearches.add(network.submit(
                 () -> runSource(current, "RUTUBE", () -> searchClient.searchRutube(value, 0))));
-        activeSearches.add(network.submit(
-                () -> runVkSource(current, value)));
+        requestVkPages(current);
         activeSearches.add(network.submit(
                 () -> runDzenSource(current, value)));
         activeSearches.add(network.submit(
@@ -470,6 +473,7 @@ public final class MainActivity extends Activity {
         if (rerunSearch && query.getText().toString().trim().length() >= 2) {
             refreshDisplayedItems(false);
             if (selectedFilter > 0) requestMissingQualities(generation.get(), new ArrayList<>(allItems));
+            requestVkPages(generation.get());
         }
     }
 
@@ -480,6 +484,7 @@ public final class MainActivity extends Activity {
         StateStore.saveSearch(this, query == null ? "" : query.getText().toString(), selectedFilter, trafficMode);
         refreshDisplayedItems(false);
         if (!allItems.isEmpty()) requestMissingQualities(generation.get(), new ArrayList<>(allItems));
+        requestVkPages(generation.get());
     }
 
     private void applyFilterMode() {
@@ -515,9 +520,24 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void runVkSource(int current, String value) {
+    private int minimumSearchWidth() {
+        return trafficMode ? TRAFFIC_FILTER_WIDTHS[selectedFilter] : NORMAL_FILTER_WIDTHS[selectedFilter];
+    }
+
+    private void requestVkPages(int current) {
+        if (!searchStarted || current != generation.get() || vkSearchSession == null
+                || vkSearchRunning || !vkSearchSession.needsMore(minimumSearchWidth())) return;
+        VkWebClient.SearchSession session = vkSearchSession;
+        int minWidth = minimumSearchWidth();
+        vkSearchRunning = true;
+        vkDone = false;
+        updateSearchStatus();
+        activeSearches.add(network.submit(() -> runVkSource(current, session, minWidth)));
+    }
+
+    private void runVkSource(int current, VkWebClient.SearchSession session, int minWidth) {
         try {
-            searchClient.searchVkPages(value, 0, thumbnailTargetWidth, found -> {
+            session.searchPages(minWidth, found -> {
                 if (Thread.currentThread().isInterrupted() || current != generation.get()) return false;
                 runOnUiThread(() -> {
                     if (current != generation.get()) return;
@@ -527,14 +547,15 @@ public final class MainActivity extends Activity {
                 });
                 return true;
             });
+        } catch (Exception ignored) {
+            // Keep cards from successful pages if a later request fails.
+        } finally {
             runOnUiThread(() -> {
-                if (current == generation.get()) finishSource("VK Video");
-            });
-        } catch (Exception e) {
-            runOnUiThread(() -> {
-                if (current == generation.get()) {
-                    finishSource("VK Video");
-                }
+                if (current != generation.get()) return;
+                vkSearchRunning = false;
+                finishSource("VK Video");
+                // A filter may have changed while the previous batch was loading.
+                requestVkPages(current);
             });
         }
     }
@@ -596,7 +617,7 @@ public final class MainActivity extends Activity {
         boolean hadItems = !searchItems.isEmpty();
         boolean gridHadFocus = !historyMode && grid.hasFocus();
         String selectedKey = historyMode ? searchGridState.selectedKey : selectedItemKey();
-        int minWidth = trafficMode ? TRAFFIC_FILTER_WIDTHS[selectedFilter] : NORMAL_FILTER_WIDTHS[selectedFilter];
+        int minWidth = minimumSearchWidth();
         searchItems.clear();
         for (VideoItem item : allItems) {
             if (minWidth == 0 || item.maxWidth >= minWidth) searchItems.add(item);

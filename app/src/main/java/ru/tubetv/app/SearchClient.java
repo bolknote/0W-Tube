@@ -41,6 +41,10 @@ final class SearchClient {
         return new VkWebClient().searchPages(query, minWidth, thumbnailWidth, listener);
     }
 
+    VkWebClient.SearchSession newVkSearch(String query, int thumbnailWidth) {
+        return new VkWebClient().newSearch(query, thumbnailWidth);
+    }
+
     List<VideoItem> searchOk(String query, int minWidth) throws Exception {
         return OkClient.search(query, minWidth);
     }
