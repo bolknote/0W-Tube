@@ -12,6 +12,55 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class PagedSearchSessionTest {
+    @Test public void irrelevantCardsDoNotUseQualityProbesOrFillTheFilteredTarget() throws Exception {
+        AtomicInteger loads = new AtomicInteger();
+        AtomicInteger probes = new AtomicInteger();
+        PagedSearchSession session = new PagedSearchSession("Ученик чудовища", cursor -> {
+            int page = loads.incrementAndGet();
+            List<VideoItem> cards = titledCards(page * 30, page == 1 ? 30 : 12,
+                    page == 1 ? "Школа монстров" : "Ученик чудовища", 0);
+            return new PagedSearchSession.Page(cards, "p" + page);
+        }, item -> {
+            assertTrue(item.title.startsWith("Ученик чудовища"));
+            probes.incrementAndGet();
+            return item.withQuality(2560, 1440);
+        });
+
+        List<VideoItem> found = session.search(2560);
+
+        assertEquals(12, found.size());
+        assertEquals(2, loads.get());
+        assertEquals(12, probes.get());
+        assertEquals(12, session.qualityProbeCount());
+        assertFalse(session.needsMore(2560));
+    }
+
+    @Test public void ordinaryTwelveCardTargetAlsoExcludesUnrelatedTitles() throws Exception {
+        AtomicInteger loads = new AtomicInteger();
+        PagedSearchSession session = new PagedSearchSession("Ученик чудовища", cursor -> {
+            int page = loads.incrementAndGet();
+            return new PagedSearchSession.Page(titledCards(page * 30, 30,
+                    page == 1 ? "Школа монстров" : "Ученик чудовища", 1920), "p" + page);
+        });
+
+        List<VideoItem> found = session.search(0);
+
+        assertEquals(12, found.size());
+        assertEquals(2, loads.get());
+        for (VideoItem item : found) assertTrue(item.title.startsWith("Ученик чудовища"));
+    }
+
+    @Test public void rejectedTitlesDoNotBypassTheRawCandidateBudget() throws Exception {
+        PagedSearchSession session = new PagedSearchSession("Ученик чудовища", cursor ->
+                new PagedSearchSession.Page(titledCards(0, 200, "Школа монстров", 0), "unused"),
+                item -> { throw new AssertionError("Unrelated video was inspected"); });
+
+        assertEquals(0, session.search(2560).size());
+        assertEquals(1, session.requestCount());
+        assertEquals(0, session.qualityProbeCount());
+        assertFalse(session.needsMore(0));
+    }
+
     @Test public void bufferedTailIsUsedBeforeRequestingAnotherPage() throws Exception {
         AtomicInteger loads = new AtomicInteger();
         PagedSearchSession session = new PagedSearchSession(cursor -> {
@@ -331,6 +380,15 @@ public class PagedSearchSessionTest {
     private static List<VideoItem> withQuality(List<VideoItem> cards, int width) {
         List<VideoItem> result = new ArrayList<>();
         for (VideoItem card : cards) result.add(card.withQuality(width, width * 9 / 16));
+        return result;
+    }
+
+    private static List<VideoItem> titledCards(int start, int count, String title, int width) {
+        List<VideoItem> result = new ArrayList<>();
+        for (int i = start; i < start + count; i++) {
+            result.add(new VideoItem("RUTUBE", title, "", "", "https://example.test/play/" + i,
+                    "https://example.test/video/" + i).withQuality(width, width * 9 / 16));
+        }
         return result;
     }
 }

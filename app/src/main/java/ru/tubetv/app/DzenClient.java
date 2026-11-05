@@ -42,7 +42,7 @@ final class DzenClient {
                 + "&clid=1400"
                 + "&type_filter=video"
                 + "&lang=ru";
-        return new PagedSearchSession(new PagedSearchSession.PageLoader() {
+        return new PagedSearchSession(query, new PagedSearchSession.PageLoader() {
             private boolean receivedCards;
 
             @Override public PagedSearchSession.Page load(String cursor) throws Exception {

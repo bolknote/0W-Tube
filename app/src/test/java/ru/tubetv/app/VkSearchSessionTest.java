@@ -18,6 +18,48 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class VkSearchSessionTest {
+    @Test public void irrelevantTitlesDoNotFillEitherSearchTarget() throws Exception {
+        for (int width : new int[]{0, 2560}) {
+            AtomicInteger requests = new AtomicInteger();
+            VkWebClient.SearchSession session = new VkWebClient.SearchSession("Ученик чудовища", 320,
+                    (section, next) -> {
+                        int number = requests.incrementAndGet();
+                        JSONObject page = page(number * 30, 30, 1440, "p" + number);
+                        for (int i = 0; i < 30; i++) video(page, i).put("title",
+                                number == 1 ? "Школа монстров" : "Ученик чудовища (2015)");
+                        return page;
+                    });
+            List<VideoItem> cards = new ArrayList<>();
+
+            collect(session, width, cards);
+
+            assertEquals(12, cards.size());
+            assertEquals(2, requests.get());
+            for (VideoItem item : cards) assertEquals("Ученик чудовища (2015)", item.title);
+            assertFalse(session.needsMore(width));
+        }
+    }
+
+    @Test public void irrelevantTitlesCannotResetTheVkPageBudget() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        VkWebClient.SearchSession session = new VkWebClient.SearchSession("Ученик чудовища", 320,
+                (section, next) -> {
+                    int number = requests.incrementAndGet();
+                    JSONObject page = page(number * 30, 30, 2160, "p" + number);
+                    for (int i = 0; i < 30; i++) video(page, i).put("title", "Школа монстров");
+                    return page;
+                });
+        List<VideoItem> cards = new ArrayList<>();
+
+        collect(session, 2560, cards);
+        collect(session, 0, cards);
+        collect(session, 3840, cards);
+
+        assertEquals(0, cards.size());
+        assertEquals(4, requests.get());
+        assertFalse(session.needsMore(0));
+    }
+
     @Test
     public void qualityFilterFindsCandidateAfterOrdinaryTwelveCardCutoff() throws Exception {
         List<String> requests = new ArrayList<>();

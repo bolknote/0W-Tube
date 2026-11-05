@@ -29,7 +29,7 @@ final class OkClient {
     }
 
     static PagedSearchSession newSearch(String query) {
-        return new PagedSearchSession(new PagedSearchSession.PageLoader() {
+        return new PagedSearchSession(query, new PagedSearchSession.PageLoader() {
             private JSONObject parameters;
             private int channelsOffset;
 

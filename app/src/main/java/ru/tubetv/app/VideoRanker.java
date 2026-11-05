@@ -95,15 +95,16 @@ final class VideoRanker {
         return true;
     }
 
-    private static boolean fuzzyToken(String left, String right) {
+    static boolean fuzzyToken(String left, String right) {
         if (left.equals(right)) return true;
         int shortest = Math.min(left.length(), right.length());
         if (shortest < 5) return false;
         int allowed = Math.max(left.length(), right.length()) <= 8 ? 1 : 2;
+        if (Math.abs(left.length() - right.length()) > allowed) return false;
         return editDistance(left, right) <= allowed;
     }
 
-    private static int editDistance(String left, String right) {
+    static int editDistance(String left, String right) {
         int[] previous = new int[right.length() + 1];
         for (int i = 0; i < previous.length; i++) previous[i] = i;
         for (int i = 1; i <= left.length(); i++) {
@@ -120,7 +121,7 @@ final class VideoRanker {
         return previous[right.length()];
     }
 
-    private static String normalize(String value) {
+    static String normalize(String value) {
         if (value == null) return "";
         value = value.toLowerCase(Locale.ROOT).replace('ё', 'е');
         StringBuilder result = new StringBuilder(value.length());

@@ -34,6 +34,7 @@ final class PagedSearchSession {
 
     private final PageLoader loader;
     private final QualityInspector inspector;
+    private final SearchTitleFilter titleFilter;
     private final List<VideoItem> candidates = new ArrayList<>();
     private final Set<String> seen = new HashSet<>();
     private final Set<String> requestedCursors = new HashSet<>();
@@ -45,15 +46,24 @@ final class PagedSearchSession {
     private boolean exhausted;
 
     PagedSearchSession(PageLoader loader) {
-        this(loader, item -> {
+        this("", loader);
+    }
+
+    PagedSearchSession(String query, PageLoader loader) {
+        this(query, loader, item -> {
             MediaCapabilities info = new StreamResolver().inspect(item.playUrl);
             return item.withQuality(info.maxWidth, info.maxHeight);
         });
     }
 
     PagedSearchSession(PageLoader loader, QualityInspector inspector) {
+        this("", loader, inspector);
+    }
+
+    PagedSearchSession(String query, PageLoader loader, QualityInspector inspector) {
         this.loader = loader;
         this.inspector = inspector;
+        this.titleFilter = new SearchTitleFilter(query);
     }
 
     boolean needsMore(int minWidth) {
@@ -61,7 +71,7 @@ final class PagedSearchSession {
         if (minWidth > 0 && completedProbes.size() < allocatedProbes.size()) return false;
         if (matching(minWidth, delivered) >= TARGET) return false;
         if (delivered < candidates.size()) return true;
-        return !exhausted && requests < MAX_PAGES && candidates.size() < MAX_CANDIDATES
+        return !exhausted && requests < MAX_PAGES && seen.size() < MAX_CANDIDATES
                 && (minWidth <= 0 || allocatedProbes.size() < MAX_QUALITY_PROBES);
     }
 
@@ -119,8 +129,10 @@ final class PagedSearchSession {
             try {
                 Page page = loader.load(next);
                 for (VideoItem item : page.items) {
-                    if (candidates.size() >= MAX_CANDIDATES) break;
-                    if (item != null && seen.add(item.stableKey())) candidates.add(item);
+                    if (seen.size() >= MAX_CANDIDATES) break;
+                    if (item != null && seen.add(item.stableKey()) && titleFilter.accepts(item.title)) {
+                        candidates.add(item);
+                    }
                 }
                 next = page.next;
                 if (next == null) exhausted = true;

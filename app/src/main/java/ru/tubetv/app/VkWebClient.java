@@ -76,7 +76,7 @@ final class VkWebClient {
     }
 
     SearchSession newSearch(String query, int thumbnailWidth) {
-        return new SearchSession(thumbnailWidth, (sectionId, nextFrom) -> {
+        return new SearchSession(query, thumbnailWidth, (sectionId, nextFrom) -> {
             String address;
             String body = null;
             if (nextFrom == null) {
@@ -102,6 +102,7 @@ final class VkWebClient {
     static final class SearchSession {
         private final int thumbnailWidth;
         private final PageLoader loader;
+        private final SearchTitleFilter titleFilter;
         private final List<VideoItem> candidates = new ArrayList<>();
         private final Set<String> seen = new LinkedHashSet<>();
         private final Set<String> requestedCursors = new LinkedHashSet<>();
@@ -111,8 +112,13 @@ final class VkWebClient {
         private boolean exhausted;
 
         SearchSession(int thumbnailWidth, PageLoader loader) {
+            this("", thumbnailWidth, loader);
+        }
+
+        SearchSession(String query, int thumbnailWidth, PageLoader loader) {
             this.thumbnailWidth = thumbnailWidth;
             this.loader = loader;
+            this.titleFilter = new SearchTitleFilter(query);
         }
 
         boolean needsMore(int minWidth) {
@@ -145,7 +151,9 @@ final class VkWebClient {
                             next == null ? null : next.nextFrom);
                     // Keep the entire bounded page: a stricter filter may need cards
                     // after the ordinary 12-result cutoff without fetching it again.
-                    candidates.addAll(parsePage(page, thumbnailWidth, seen, PAGE_SIZE));
+                    for (VideoItem item : parsePage(page, thumbnailWidth, seen, PAGE_SIZE)) {
+                        if (titleFilter.accepts(item.title)) candidates.add(item);
+                    }
                     next = pageCursor(page);
                     if (next == null) exhausted = true;
                 } catch (Exception error) {

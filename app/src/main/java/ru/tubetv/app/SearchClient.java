@@ -18,7 +18,7 @@ final class SearchClient {
     }
 
     PagedSearchSession newRutubeSearch(String query) {
-        return new PagedSearchSession(cursor -> {
+        return new PagedSearchSession(query, cursor -> {
             String url = cursor == null ? "https://rutube.ru/api/search/video/?query="
                     + Uri.encode(query) + "&page=1&limit=30" : cursor;
             return parseRutubePage(getJson(url), url);
