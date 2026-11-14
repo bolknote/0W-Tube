@@ -1,5 +1,6 @@
 package ru.tubetv.app;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 import static org.junit.Assert.*;
@@ -28,5 +29,32 @@ public class StreamResolverTest {
         PlaybackInfo info = StreamResolver.inspectVkFiles(files, 1920, 1080, false);
         assertEquals("https://cdn.example/master.mpd", info.streamUrl);
         assertEquals("application/dash+xml", info.streamMimeType);
+    }
+
+    @Test public void rutubeTextDetailTakesPrecedenceOverOldFormats() throws Exception {
+        JSONObject options = new JSONObject().put("detail", "Трансляция ещё не началась")
+                .put("video_balancer", new JSONObject().put("m3u8", "https://cdn.example/old.m3u8"));
+        Exception error = assertThrows(Exception.class, () -> StreamResolver.requireRutubeBalancer(options));
+        assertEquals("Видео RUTUBE недоступно: Трансляция ещё не началась", error.getMessage());
+    }
+
+    @Test public void rutubeDetailPrefersTheRussianMessageNotArrayOrder() throws Exception {
+        JSONArray languages = new JSONArray()
+                .put(new JSONObject().put("lang", "eng").put("title", "Incorrect link"))
+                .put(new JSONObject().put("lang", "rus").put("title", "Неправильная ссылка на видео"));
+        JSONObject options = new JSONObject().put("detail", new JSONObject().put("languages", languages));
+        Exception error = assertThrows(Exception.class, () -> StreamResolver.requireRutubeBalancer(options));
+        assertEquals("Видео RUTUBE недоступно: Неправильная ссылка на видео", error.getMessage());
+    }
+
+    @Test public void rutubeEmptyDetailDoesNotHideAvailableFormats() throws Exception {
+        JSONObject balancer = new JSONObject().put("m3u8", "https://cdn.example/stream.m3u8");
+        for (Object detail : new Object[]{"", JSONObject.NULL, new JSONObject()}) {
+            JSONObject options = new JSONObject().put("detail", detail).put("video_balancer", balancer);
+            assertSame(balancer, StreamResolver.requireRutubeBalancer(options));
+        }
+        Exception error = assertThrows(Exception.class, () -> StreamResolver.requireRutubeBalancer(
+                new JSONObject().put("video_balancer", new JSONObject())));
+        assertEquals("RUTUBE не отдал поток", error.getMessage());
     }
 }

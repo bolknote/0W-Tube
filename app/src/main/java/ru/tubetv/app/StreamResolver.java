@@ -236,20 +236,7 @@ final class StreamResolver {
         }
         String referer = url != null && url.startsWith("http")
                 ? url : "https://rutube.ru/video/" + id + "/";
-        JSONObject options = new JSONObject(get(optionsUrl, referer));
-        JSONObject detail = options.optJSONObject("detail");
-        if (detail != null) {
-            String reason = null;
-            JSONArray languages = detail.optJSONArray("languages");
-            JSONObject language = languages == null ? null : languages.optJSONObject(0);
-            if (language != null) reason = language.optString("title", null);
-            if (reason == null || reason.isEmpty()) reason = detail.optString("type", null);
-            throw new Exception(reason == null || reason.isEmpty()
-                    ? "Видео RUTUBE недоступно"
-                    : "Видео RUTUBE недоступно: " + reason);
-        }
-        JSONObject balancer = options.optJSONObject("video_balancer");
-        if (balancer == null) throw new Exception("RUTUBE не отдал поток");
+        JSONObject balancer = requireRutubeBalancer(new JSONObject(get(optionsUrl, referer)));
         String fallback = null;
         String hls = null;
         String dash = null;
@@ -283,6 +270,35 @@ final class StreamResolver {
         }
         if (stream == null) throw new Exception("Нет совместимого потока RUTUBE");
         return new PlaybackInfo(stream, mime, maxWidth, maxHeight);
+    }
+
+    static JSONObject requireRutubeBalancer(JSONObject options) throws Exception {
+        Object detail = options.opt("detail");
+        String reason = "";
+        if (detail instanceof String) {
+            reason = ((String) detail).trim();
+        } else if (detail instanceof JSONObject && ((JSONObject) detail).length() > 0) {
+            JSONObject error = (JSONObject) detail;
+            JSONArray languages = error.optJSONArray("languages");
+            for (int i = 0; languages != null && i < languages.length(); i++) {
+                JSONObject language = languages.optJSONObject(i);
+                if (language == null || language.isNull("title")) continue;
+                String title = language.optString("title").trim();
+                if (title.isEmpty()) continue;
+                String lang = language.optString("lang");
+                if ("rus".equalsIgnoreCase(lang) || "ru".equalsIgnoreCase(lang)) {
+                    reason = title;
+                    break;
+                }
+                if (reason.isEmpty()) reason = title;
+            }
+            if (reason.isEmpty() && !error.isNull("type")) reason = error.optString("type").trim();
+            if (reason.isEmpty()) throw new Exception("Видео RUTUBE недоступно");
+        }
+        if (!reason.isEmpty()) throw new Exception("Видео RUTUBE недоступно: " + reason);
+        JSONObject balancer = options.optJSONObject("video_balancer");
+        if (balancer == null || balancer.length() == 0) throw new Exception("RUTUBE не отдал поток");
+        return balancer;
     }
 
     private static String queryParameter(String url, String name) {
