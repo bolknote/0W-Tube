@@ -160,6 +160,8 @@ adb shell am instrument -w ru.tubetv.app.test/ru.tubetv.app.PeerTubeFallbackInst
 
 Add `-e live true` before the component name to opt into real PeerTube requests, byte-range reads and audio playback after a seek. Live checks distinguish a remote timeout from a regression by repeating the failed request without the fallback wrapper; such unavailable sources are reported explicitly. No complete films are downloaded.
 
+Use `-e recovery true` instead to test automatic playback recovery without network access. A local fixture makes a VK stream expire during playback, then checks that the player resolves a fresh URL and resumes from the saved position with no input. A second fixture checks that an unrecoverable failure stops after one retry without opening an external player.
+
 ## Tagged releases
 
 Pushing a Git tag triggers `.github/workflows/release.yml`. The workflow verifies that the tag matches `versionName`, runs tests and Android lint, builds a minified unsigned APK, optimizes its ZIP compression, aligns it, and signs it once with the persistent release key. It verifies alignment and the signature before creating a GitHub Release. The R8 mapping is preserved as a separate workflow artifact for decoding crash reports.

@@ -6,7 +6,6 @@ import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.media.AudioManager;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.Build;
 import android.os.Handler;
@@ -52,6 +51,7 @@ public final class PlayerActivity extends Activity {
     private static final float[] PLAYBACK_SPEEDS = {0.75f, 1f, 1.25f, 1.5f, 2f};
     private final ExecutorService resolver = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
+    private final PlaybackRecovery recovery = new PlaybackRecovery();
     private final Runnable progressTicker = new Runnable() {
         @Override public void run() {
             updateControls();
@@ -113,6 +113,7 @@ public final class PlayerActivity extends Activity {
     private VideoItem historyItem;
     private boolean activityStarted;
     private boolean destroyed;
+    private boolean reconnectPending;
     private final Runnable openMenuFromLongCenter = () -> {
         if (centerKeyHeld && player != null) {
             centerLongPressTriggered = true;
@@ -362,7 +363,7 @@ public final class PlayerActivity extends Activity {
             try {
                 PlaybackInfo resolved = new StreamResolver().resolveForPlayback(url, audioOnly);
                 runOnUiThread(() -> {
-                    if (destroyed || isFinishing()) return;
+                    if (isClosing()) return;
                     streamUrl = resolved.streamUrl;
                     streamMimeType = resolved.streamMimeType;
                     streamFallbackUrl = resolved.fallbackUrl;
@@ -371,9 +372,9 @@ public final class PlayerActivity extends Activity {
             } catch (Exception error) {
                 if (Thread.currentThread().isInterrupted()) return;
                 runOnUiThread(() -> {
-                    if (!destroyed && !isFinishing()) {
-                        showError(error.getMessage() == null ? "Видео больше недоступно" : error.getMessage());
-                    }
+                    if (isClosing()) return;
+                    if (recovery.afterResolutionError(error)) reconnect();
+                    else showError(error.getMessage() == null ? "Видео больше недоступно" : error.getMessage());
                 });
             }
         });
@@ -392,15 +393,17 @@ public final class PlayerActivity extends Activity {
 
     @OptIn(markerClass = UnstableApi.class)
     private void startPlayer() {
-        if (!activityStarted || destroyed || isFinishing() || streamUrl == null || player != null) return;
-        player = PlaybackEngineFactory.create(this, videoSource, videoIdentityUrl,
+        if (!activityStarted || isClosing() || streamUrl == null || player != null) return;
+        ExoPlayer active = PlaybackEngineFactory.create(this, videoSource, videoIdentityUrl,
                 trafficMode, targetHeight, audioOnly, streamUrl, streamFallbackUrl);
+        player = active;
         if (audioOnly) videoSurface.setVisibility(View.INVISIBLE);
         videoSurface.setMirrored(mirrored);
         Surface output = videoSurface.getVideoSurface();
-        if (output != null) player.setVideoSurface(output);
-        player.addListener(new Player.Listener() {
+        if (output != null) active.setVideoSurface(output);
+        active.addListener(new Player.Listener() {
             @Override public void onPlaybackStateChanged(int state) {
+                if (player != active) return;
                 if (state == Player.STATE_READY) {
                     loading.setVisibility(View.GONE);
                     message.setVisibility(View.GONE);
@@ -411,27 +414,71 @@ public final class PlayerActivity extends Activity {
             }
 
             @Override public void onIsPlayingChanged(boolean isPlaying) {
+                if (player != active) return;
                 updateControls();
                 scheduleControlsHide();
             }
 
             @Override public void onVideoSizeChanged(VideoSize size) {
+                if (player != active) return;
                 videoWidth = size.width;
                 videoHeight = size.height;
                 fitSurface(size.width, size.height);
             }
 
             @Override public void onPlayerError(PlaybackException error) {
-                showError("Ошибка воспроизведения: " + error.getErrorCodeName());
+                if (player != active || isClosing()) return;
+                boolean live = active.isCurrentMediaItemLive()
+                        || error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW;
+                long position = PlaybackRecovery.restartPosition(active.getCurrentPosition(), live);
+                long duration = active.getDuration();
+                boolean playWhenReady = active.getPlayWhenReady();
+                // Release and replace the player after Media3 finishes delivering this event.
+                ui.post(() -> handlePlaybackError(active, error, position, duration, playWhenReady));
             }
         });
-        player.setMediaItem(PlaybackEngineFactory.mediaItem(streamUrl, streamMimeType));
-        if (resumePosition > 0) player.seekTo(resumePosition);
-        player.setPlaybackSpeed(playbackSpeed);
-        player.setPlayWhenReady(autoPlay);
-        player.prepare();
+        active.setMediaItem(PlaybackEngineFactory.mediaItem(streamUrl, streamMimeType));
+        if (resumePosition > 0) active.seekTo(resumePosition);
+        active.setPlaybackSpeed(playbackSpeed);
+        active.setPlayWhenReady(autoPlay);
+        active.prepare();
         restartProgressTicker();
     }
+
+    private void handlePlaybackError(ExoPlayer failed, PlaybackException error, long position,
+                                     long duration, boolean playWhenReady) {
+        if (player != failed || isClosing()) return;
+        if (!audioMovedToBackground) {
+            resumePosition = position;
+            autoPlay = playWhenReady;
+            StateStore.savePlayerPosition(this, videoSource, videoIdentityUrl, position);
+            saveWatchProgress(position, duration);
+        }
+        if (recovery.afterPlaybackError(error.errorCode, error)) {
+            reconnect();
+        } else {
+            int status = PlaybackRecovery.httpStatus(error);
+            String detail = status < 0 ? error.getErrorCodeName() : "HTTP " + status;
+            showError("Воспроизведение остановилось: " + detail);
+        }
+    }
+
+    private void reconnect() {
+        abandonStream();
+        reconnectPending = true;
+        loading.setVisibility(View.VISIBLE);
+        message.setVisibility(View.VISIBLE);
+        message.setText("Восстанавливаю воспроизведение…");
+        startPendingRecovery();
+    }
+
+    private void startPendingRecovery() {
+        if (!reconnectPending || !activityStarted || isClosing()) return;
+        reconnectPending = false;
+        resolveStream();
+    }
+
+    private boolean isClosing() { return destroyed || leavingPlayer || isFinishing(); }
 
     private void restartProgressTicker() {
         ui.removeCallbacks(progressTicker);
@@ -439,6 +486,7 @@ public final class PlayerActivity extends Activity {
     }
 
     private void showControls() {
+        if (player == null) return;
         boolean wasHidden = controls.getVisibility() != View.VISIBLE;
         controls.animate().cancel();
         if (wasHidden) controls.setTranslationY(0f);
@@ -771,10 +819,33 @@ public final class PlayerActivity extends Activity {
     }
 
     private void showError(String text) {
+        abandonStream();
         loading.setVisibility(View.GONE);
-        controls.setVisibility(View.GONE);
         message.setVisibility(View.VISIBLE);
-        message.setText(text + "\n\nOK — открыть официальный плеер");
+        message.setText(text);
+    }
+
+    private void abandonStream() {
+        reconnectPending = false;
+        streamUrl = null;
+        streamMimeType = null;
+        streamFallbackUrl = null;
+        ui.removeCallbacks(progressTicker);
+        ui.removeCallbacks(hideControls);
+        ui.removeCallbacks(beginHeldSeek);
+        ui.removeCallbacks(openMenuFromLongCenter);
+        centerKeyHeld = false;
+        centerLongPressTriggered = false;
+        heldSeekKey = KeyEvent.KEYCODE_UNKNOWN;
+        heldSeekIsLong = false;
+        dpadScrubbing = false;
+        scrubbing = false;
+        controlsDragging = false;
+        releasePlayer();
+        if (playbackMenuVisible) setPlaybackMenuVisible(false);
+        controls.animate().cancel();
+        controls.clearFocus();
+        controls.setVisibility(View.GONE);
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
@@ -787,7 +858,7 @@ public final class PlayerActivity extends Activity {
             return true;
         }
         if (keyCode == KeyEvent.KEYCODE_MENU) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+            if (player != null && event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
                 setPlaybackMenuVisible(!playbackMenuVisible);
             }
             return true;
@@ -796,7 +867,7 @@ public final class PlayerActivity extends Activity {
                 || keyCode == KeyEvent.KEYCODE_ENTER;
         if (centerKey && (centerKeyHeld || !playbackMenuVisible)) {
             if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                if (event.getRepeatCount() == 0) {
+                if (player != null && event.getRepeatCount() == 0) {
                     centerKeyHeld = true;
                     centerLongPressTriggered = false;
                     ui.postDelayed(openMenuFromLongCenter,
@@ -806,13 +877,11 @@ public final class PlayerActivity extends Activity {
             }
             if (event.getAction() == KeyEvent.ACTION_UP) {
                 ui.removeCallbacks(openMenuFromLongCenter);
+                boolean wasHeld = centerKeyHeld;
                 centerKeyHeld = false;
-                if (!centerLongPressTriggered) {
-                    if (player != null && player.getPlaybackState() != Player.STATE_IDLE) {
-                        togglePlayback();
-                    } else {
-                        openOfficial();
-                    }
+                if (wasHeld && !centerLongPressTriggered && player != null
+                        && player.getPlaybackState() != Player.STATE_IDLE) {
+                    togglePlayback();
                 }
                 centerLongPressTriggered = false;
                 return true;
@@ -827,7 +896,7 @@ public final class PlayerActivity extends Activity {
         if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
             if (player != null && player.getPlaybackState() != Player.STATE_IDLE) {
                 togglePlayback();
-            } else openOfficial();
+            }
             return true;
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
@@ -879,12 +948,6 @@ public final class PlayerActivity extends Activity {
         }
     }
 
-    private void openOfficial() {
-        String page = getIntent().getStringExtra("page_url");
-        if (page == null) return;
-        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(page))); } catch (Exception ignored) { }
-    }
-
     private void openHistory() {
         leavingPlayer = true;
         saveProgress();
@@ -902,10 +965,12 @@ public final class PlayerActivity extends Activity {
                 player.play();
             } else {
                 resumePosition = position;
+                autoPlay = true;
             }
             audioMovedToBackground = false;
         }
-        if (player == null && streamUrl != null) startPlayerSafely();
+        if (reconnectPending) startPendingRecovery();
+        else if (player == null && streamUrl != null) startPlayerSafely();
         if (player != null && !player.isPlaying()) showControls();
         restartProgressTicker();
     }
@@ -977,6 +1042,9 @@ public final class PlayerActivity extends Activity {
             player.seekTo(position);
             player.play();
             showControls();
+        } else {
+            resumePosition = position;
+            autoPlay = true;
         }
         audioMovedToBackground = false;
     }
@@ -992,10 +1060,11 @@ public final class PlayerActivity extends Activity {
     }
 
     private void releasePlayer() {
-        if (player == null) return;
-        player.clearVideoSurface();
-        player.release();
+        ExoPlayer previous = player;
         player = null;
+        if (previous == null) return;
+        previous.clearVideoSurface();
+        previous.release();
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }

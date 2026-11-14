@@ -30,11 +30,13 @@ public final class PeerTubeFallbackInstrumentation extends Instrumentation {
     private static final String PRIMARY = "https://files.example/audio.mp4";
     private static final String DOWNLOAD = "https://files.example/download/audio.mp4";
     private boolean live;
+    private boolean recovery;
     private final StringBuilder report = new StringBuilder();
 
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
         live = arguments != null && "true".equals(arguments.getString("live"));
+        recovery = arguments != null && "true".equals(arguments.getString("recovery"));
         start();
     }
 
@@ -47,7 +49,8 @@ public final class PeerTubeFallbackInstrumentation extends Instrumentation {
             doesNotRetryUnrelatedUris();
             doesNotLoopWhenDownloadFails();
             sharesSuccessfulTargetAcrossSeekRequests();
-            if (live) liveMedia();
+            if (recovery) PlaybackRecoveryScenario.run(this, report);
+            else if (live) liveMedia();
             result.putString("stream", report + "PASS\n");
             finish(Activity.RESULT_OK, result);
         } catch (Throwable error) {
